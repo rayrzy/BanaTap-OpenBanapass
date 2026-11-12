@@ -26,6 +26,10 @@ AutoReadDelayMs=1500
 VerifyPatch=0        ; 1 = only NOP the patch site if it starts with a CALL (0xE8)
 PadButton=           ; XInput gamepad button(s) that tap the card, e.g. START or LB+A (empty = off)
 BeepOnTap=0          ; 1 = play a short beep when the card is sent
+OnlyWhenFocused=1    ; 1 = ignore all taps unless the game window is in the foreground
+AutoReadMode=always  ; always = auto tap on every card request, once = only the first one
+AutoReadCooldownMs=0 ; minimum time after a tap before auto tap may fire again
+ToggleAutoKey=       ; key that switches auto tap on/off while playing, e.g. F9 (empty = off)
 ```
 
 Notes:
@@ -34,6 +38,18 @@ Notes:
   Booleans accept `1/0`, `true/false`, `yes/no`, `on/off`.
 - Gamepad buttons: `A B X Y START BACK LB RB L3 R3 UP DOWN LEFT RIGHT`, combined with `+`.
   Any connected XInput controller (1-4) is checked.
+- Key names (`ReadKey`, `ToggleAutoKey`): a letter, `F1`-`F24`, `SPACE`, `ENTER`, `TAB`, `ESC`,
+  `INSERT`, `DELETE`, `HOME`, `END`, `PAGEUP`, `PAGEDOWN`, the arrow keys, or a virtual-key code
+  such as `67` / `0x43`.
+- Auto tap after a logout: with `AutoReadMode=always` the game asks for a card again right
+  after logging out, which would log you straight back in. Use `AutoReadMode=once`, or set
+  `AutoReadCooldownMs` (for example `60000`), or switch auto tap off with `ToggleAutoKey`.
+  Pressing `ToggleAutoKey` to turn auto tap back on re-arms it for the next card request.
+- `OnlyWhenFocused=1` checks that the foreground window belongs to the game process. It applies
+  to the tap key, the gamepad and auto tap. If taps never work on your setup, set it to `0`.
+- `card.ini` is never modified after it has been created. If `chipId`/`accessCode` are missing
+  the card is not sent; if they look unusual they are sent exactly as written and a warning
+  goes to the debug log. A new random card is only generated when `card.ini` does not exist.
 - Changes to `BanaConfig.ini` are picked up within about a second, no restart needed.
   Removing a key restores its default.
 

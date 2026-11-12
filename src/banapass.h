@@ -23,7 +23,7 @@ extern int cardInsertKey;
 // Core functions
 void initBanapass();
 void shutdownBanapass();
-void reloadCard();
+bool reloadCard();
 void patchCardDataCheck(u64 patchOffset);
 
 // Key monitor / auto-tap thread

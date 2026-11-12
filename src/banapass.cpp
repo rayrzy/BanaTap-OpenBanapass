@@ -44,6 +44,15 @@ static DWORD autoTapDelay  = 1500;  // [settings] autoTapDelayMs
 static bool verifyPatch    = false; // [settings] verifyPatch=1
 static bool beepOnTap      = false; // [BanaConfig] BeepOnTap=1
 static WORD padMask        = 0;     // [BanaConfig] PadButton=START / LB+A ...
+static bool onlyFocused    = true;  // [BanaConfig] OnlyWhenFocused=1
+static bool autoOnce       = false; // [BanaConfig] AutoReadMode=once
+static DWORD autoCooldown  = 0;     // [BanaConfig] AutoReadCooldownMs
+static int toggleKey       = 0;     // [BanaConfig] ToggleAutoKey
+
+// Runtime state (not reloaded from config)
+static bool sessionTapped  = false; // a card has been sent since start / re-arm
+static bool hasTapped      = false;
+static DWORD lastTapTick   = 0;
 
 static void resolveIniPath() {
     HMODULE self = NULL;
@@ -123,9 +132,16 @@ static void createConfig() {
     WritePrivateProfileStringA("BanaConfig", "VerifyPatch", "0", configPath);
     WritePrivateProfileStringA("BanaConfig", "PadButton", "", configPath);
     WritePrivateProfileStringA("BanaConfig", "BeepOnTap", "0", configPath);
+    WritePrivateProfileStringA("BanaConfig", "OnlyWhenFocused", "1", configPath);
+    WritePrivateProfileStringA("BanaConfig", "AutoReadMode", "always", configPath);
+    WritePrivateProfileStringA("BanaConfig", "AutoReadCooldownMs", "0", configPath);
+    WritePrivateProfileStringA("BanaConfig", "ToggleAutoKey", "", configPath);
 }
 
-// "C" / "c" -> 'C'; "67" or "0x43" -> virtual-key code. Returns 0 if invalid.
+static bool equalsNoCase(const char* a, const char* b);
+
+// "C" / "c" -> 'C'; "F9" -> VK_F9; "SPACE", "INSERT", ... -> named key;
+// "67" or "0x43" -> virtual-key code. Returns 0 if invalid.
 static int parseKey(const char* s) {
     while (*s == ' ' || *s == '\t') s++;
     if (!*s) return 0;
@@ -134,9 +150,23 @@ static int parseKey(const char* s) {
         if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
         return (unsigned char)c;
     }
+    if ((s[0] == 'F' || s[0] == 'f') && s[1] >= '0' && s[1] <= '9') {
+        char* end = NULL;
+        long n = strtol(s + 1, &end, 10);
+        if (end != s + 1 && *end == 0 && n >= 1 && n <= 24) return 0x70 + (int)n - 1;
+    }
+    static const struct { const char* name; int vk; } names[] = {
+        {"SPACE", 0x20}, {"ENTER", 0x0D}, {"TAB", 0x09}, {"ESC", 0x1B},
+        {"INSERT", 0x2D}, {"DELETE", 0x2E}, {"HOME", 0x24}, {"END", 0x23},
+        {"PAGEUP", 0x21}, {"PAGEDOWN", 0x22},
+        {"LEFT", 0x25}, {"UP", 0x26}, {"RIGHT", 0x27}, {"DOWN", 0x28},
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (equalsNoCase(s, names[i].name)) return names[i].vk;
+    }
     char* end = NULL;
     long v = strtol(s, &end, 0);
-    if (end == s || v < 1 || v > 255) return 0;
+    if (end == s || *end != 0 || v < 1 || v > 255) return 0;
     return (int)v;
 }
 
@@ -253,6 +283,10 @@ static void loadSettings() {
     verifyPatch   = false;
     beepOnTap     = false;
     padMask       = 0;
+    onlyFocused   = true;
+    autoOnce      = false;
+    autoCooldown  = 0;
+    toggleKey     = 0;
 
     // Legacy location: [settings] in card.ini (kept for backward compatibility)
     applyFile("settings", iniPath, "key", "autoTap", "autoTapDelayMs", "verifyPatch");
@@ -264,6 +298,15 @@ static void loadSettings() {
     char val[64];
     bool b;
     if (readCfg("BanaConfig", "BeepOnTap", configPath, val, sizeof(val)) && parseBool(val, &b)) beepOnTap = b;
+    if (readCfg("BanaConfig", "OnlyWhenFocused", configPath, val, sizeof(val)) && parseBool(val, &b)) onlyFocused = b;
+    if (readCfg("BanaConfig", "AutoReadMode", configPath, val, sizeof(val))) {
+        if (equalsNoCase(val, "once")) autoOnce = true;
+        else if (equalsNoCase(val, "always")) autoOnce = false;
+        else OutputDebugStringA("[BanaTap] AutoReadMode must be 'always' or 'once', keeping 'always'\n");
+    }
+    long cd;
+    if (readCfg("BanaConfig", "AutoReadCooldownMs", configPath, val, sizeof(val)) && parseInt(val, &cd) && cd >= 0) autoCooldown = (DWORD)cd;
+    if (readCfg("BanaConfig", "ToggleAutoKey", configPath, val, sizeof(val))) toggleKey = parseKey(val);
     if (readCfg("BanaConfig", "PadButton", configPath, val, sizeof(val))) {
         WORD m = 0;
         if (parsePadMask(val, &m)) {
@@ -274,27 +317,49 @@ static void loadSettings() {
     }
 }
 
-void reloadCard() {
+// Reads chipId/accessCode from card.ini. The file is never modified here:
+// a value you put there is the identity the server sees, so it is not
+// "repaired" or replaced behind your back.
+// Returns false (and sends nothing) if either value is missing.
+// Values with an unexpected format are still used as written, truncated to
+// the field size, and a warning is logged.
+bool reloadCard() {
+    static bool warnedFormat = false;
+    static DWORD lastMissingWarn = 0;
     char ac[64] = {0};
     char ci[64] = {0};
-    GetPrivateProfileStringA("card", "accessCode", "", ac, sizeof(ac), iniPath);
-    GetPrivateProfileStringA("card", "chipId", "", ci, sizeof(ci), iniPath);
+    readCfg("card", "accessCode", iniPath, ac, sizeof(ac));
+    readCfg("card", "chipId", iniPath, ci, sizeof(ci));
 
-    // Repair invalid values instead of sending garbage to the server
-    bool dirty = false;
-    if (!validAccessCode(ac)) { seedRandom(); makeAccessCode(ac); dirty = true; }
-    if (!validChipId(ci))     { seedRandom(); makeChipId(ci);     dirty = true; }
-    if (dirty) {
-        WritePrivateProfileStringA("card", "accessCode", ac, iniPath);
-        WritePrivateProfileStringA("card", "chipId", ci, iniPath);
+    if (!ac[0] || !ci[0]) {
+        DWORD now = GetTickCount();
+        if (lastMissingWarn == 0 || now - lastMissingWarn > 5000) {
+            lastMissingWarn = now ? now : 1;
+            OutputDebugStringA("[BanaTap] card.ini has no chipId/accessCode under [card]; card not sent\n");
+        }
+        return false;
     }
-    memcpy(accessCode, ac, sizeof(accessCode)); accessCode[20] = 0;
-    memcpy(chipId, ci, sizeof(chipId));         chipId[32] = 0;
+
+    bool formatOk = validAccessCode(ac) && validChipId(ci);
+    if (!formatOk && !warnedFormat) {
+        warnedFormat = true;
+        OutputDebugStringA("[BanaTap] chipId (32 hex) / accessCode (20 digits) look unusual; sending them as written\n");
+    }
+    if (formatOk) warnedFormat = false;
+
+    memset(accessCode, 0, sizeof(accessCode));
+    memset(chipId, 0, sizeof(chipId));
+    strncpy(accessCode, ac, 20);
+    strncpy(chipId, ci, 32);
+    return true;
 }
 
 void initBanapass() {
     resolveIniPath();
-    if (!fileExists(iniPath)) createCard();
+    if (!fileExists(iniPath)) {
+        createCard();
+        OutputDebugStringA("[BanaTap] card.ini not found: generated a NEW random card identity\n");
+    }
     loadSettings();
     memcpy(cardData, cardDataTemplate, 168);
     reloadCard();
@@ -372,6 +437,15 @@ static bool padPressed() {
     return false;
 }
 
+// True if the foreground window belongs to this (game) process.
+static bool gameFocused() {
+    HWND h = GetForegroundWindow();
+    if (!h) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(h, &pid);
+    return pid == GetCurrentProcessId();
+}
+
 // ---- config file change detection --------------------------------------------
 
 static void fileTime(const char* path, FILETIME* out) {
@@ -384,6 +458,7 @@ static void fileTime(const char* path, FILETIME* out) {
 DWORD WINAPI cardPollThread(LPVOID lpParam) {
     DWORD waitSince = 0;
     bool wasWaiting = false;
+    bool toggleWasDown = false;
 
     FILETIME cfgTime, iniTime;
     fileTime(configPath, &cfgTime);
@@ -410,20 +485,42 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
         if (waiting && !wasWaiting) waitSince = GetTickCount();
         wasWaiting = waiting;
 
-        bool keyDown = (GetAsyncKeyState(cardInsertKey) & 0x8000) != 0;
-        bool padDown = waiting && padPressed();
-        bool autoDue = autoTap && waiting && (GetTickCount() - waitSince >= autoTapDelay);
+        bool focused = !onlyFocused || gameFocused();
+
+        // Runtime on/off switch for auto tap. Turning it on also re-arms it
+        // (clears the "already tapped" state and the cooldown).
+        bool toggleDown = toggleKey && focused && (GetAsyncKeyState(toggleKey) & 0x8000) != 0;
+        if (toggleDown && !toggleWasDown) {
+            autoTap = !autoTap;
+            if (autoTap) {
+                sessionTapped = false;
+                hasTapped     = false;
+            }
+            OutputDebugStringA(autoTap ? "[BanaTap] auto tap ON\n" : "[BanaTap] auto tap OFF\n");
+            if (beepOnTap) MessageBeep(autoTap ? MB_ICONASTERISK : MB_ICONEXCLAMATION);
+        }
+        toggleWasDown = toggleDown;
+
+        bool keyDown = focused && (GetAsyncKeyState(cardInsertKey) & 0x8000) != 0;
+        bool padDown = waiting && focused && padPressed();
+
+        bool autoDue = autoTap && focused && waiting &&
+                       (GetTickCount() - waitSince >= autoTapDelay) &&
+                       !(autoOnce && sessionTapped) &&
+                       !(hasTapped && GetTickCount() - lastTapTick < autoCooldown);
 
         if (waiting && (keyDown || padDown || autoDue)) {
             callbackTouch cb = touchCallback;
             u64 data = touchData;
-            if (cb) {
-                reloadCard();
+            if (cb && reloadCard()) {
                 memcpy(cardData + 0x2C, chipId, 33);
                 memcpy(cardData + 0x50, accessCode, 21);
                 cb(0, 0, cardData, data);
                 waitingForTouch = false;
                 touchFinished   = true;
+                sessionTapped   = true;
+                hasTapped       = true;
+                lastTapTick     = GetTickCount();
                 if (beepOnTap) MessageBeep(MB_OK);
             }
         }
