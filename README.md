@@ -24,7 +24,18 @@ ReadKey=C            ; letter, or a virtual-key code such as 67 / 0x43
 AutoRead=0           ; 1 = tap automatically when the game asks for a card
 AutoReadDelayMs=1500
 VerifyPatch=0        ; 1 = only NOP the patch site if it starts with a CALL (0xE8)
+PadButton=           ; XInput gamepad button(s) that tap the card, e.g. START or LB+A (empty = off)
+BeepOnTap=0          ; 1 = play a short beep when the card is sent
 ```
+
+Notes:
+
+- Inline comments after `;` or `#` are ignored, and values are not case-sensitive.
+  Booleans accept `1/0`, `true/false`, `yes/no`, `on/off`.
+- Gamepad buttons: `A B X Y START BACK LB RB L3 R3 UP DOWN LEFT RIGHT`, combined with `+`.
+  Any connected XInput controller (1-4) is checked.
+- Changes to `BanaConfig.ini` are picked up within about a second, no restart needed.
+  Removing a key restores its default.
 
 The older `[settings]` section in `card.ini` (`key`, `autoTap`, `autoTapDelayMs`,
 `verifyPatch`) is still read; `BanaConfig.ini` wins when both are present.

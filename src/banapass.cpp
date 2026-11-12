@@ -42,6 +42,8 @@ static char configPath[MAX_PATH] = ".\\BanaConfig.ini";
 static bool autoTap        = false; // [settings] autoTap=1
 static DWORD autoTapDelay  = 1500;  // [settings] autoTapDelayMs
 static bool verifyPatch    = false; // [settings] verifyPatch=1
+static bool beepOnTap      = false; // [BanaConfig] BeepOnTap=1
+static WORD padMask        = 0;     // [BanaConfig] PadButton=START / LB+A ...
 
 static void resolveIniPath() {
     HMODULE self = NULL;
@@ -119,6 +121,8 @@ static void createConfig() {
     WritePrivateProfileStringA("BanaConfig", "AutoRead", "0", configPath);
     WritePrivateProfileStringA("BanaConfig", "AutoReadDelayMs", "1500", configPath);
     WritePrivateProfileStringA("BanaConfig", "VerifyPatch", "0", configPath);
+    WritePrivateProfileStringA("BanaConfig", "PadButton", "", configPath);
+    WritePrivateProfileStringA("BanaConfig", "BeepOnTap", "0", configPath);
 }
 
 // "C" / "c" -> 'C'; "67" or "0x43" -> virtual-key code. Returns 0 if invalid.
@@ -136,31 +140,138 @@ static int parseKey(const char* s) {
     return (int)v;
 }
 
+// ---- tolerant config parsing ----------------------------------------------
+
+// Cut an inline comment (";" or "#" at the start or after whitespace) and trim.
+static void cleanValue(char* s) {
+    for (char* p = s; *p; p++) {
+        if ((*p == ';' || *p == '#') && (p == s || p[-1] == ' ' || p[-1] == '\t')) {
+            *p = 0;
+            break;
+        }
+    }
+    char* start = s;
+    while (*start == ' ' || *start == '\t') start++;
+    size_t len = strlen(start);
+    while (len > 0 && (start[len - 1] == ' ' || start[len - 1] == '\t' ||
+                       start[len - 1] == '\r' || start[len - 1] == '\n')) {
+        start[--len] = 0;
+    }
+    if (start != s) memmove(s, start, len + 1);
+}
+
+static bool readCfg(const char* section, const char* key, const char* file, char* out, DWORD size) {
+    GetPrivateProfileStringA(section, key, "", out, size, file);
+    cleanValue(out);
+    return out[0] != 0;
+}
+
+static bool equalsNoCase(const char* a, const char* b) {
+    for (; *a && *b; a++, b++) {
+        char x = *a, y = *b;
+        if (x >= 'a' && x <= 'z') x = (char)(x - 'a' + 'A');
+        if (y >= 'a' && y <= 'z') y = (char)(y - 'a' + 'A');
+        if (x != y) return false;
+    }
+    return *a == *b;
+}
+
+static bool parseBool(const char* s, bool* out) {
+    if (equalsNoCase(s, "1") || equalsNoCase(s, "true") || equalsNoCase(s, "yes") || equalsNoCase(s, "on")) {
+        *out = true;
+        return true;
+    }
+    if (equalsNoCase(s, "0") || equalsNoCase(s, "false") || equalsNoCase(s, "no") || equalsNoCase(s, "off")) {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
+static bool parseInt(const char* s, long* out) {
+    char* end = NULL;
+    long v = strtol(s, &end, 0);
+    if (end == s || *end != 0) return false;
+    *out = v;
+    return true;
+}
+
+// XInput button names -> wButtons mask. "LB+A" combines buttons.
+// Returns false (and leaves mask untouched) if any name is unknown.
+static bool parsePadMask(const char* s, WORD* mask) {
+    static const struct { const char* name; WORD bit; } table[] = {
+        {"UP", 0x0001}, {"DOWN", 0x0002}, {"LEFT", 0x0004}, {"RIGHT", 0x0008},
+        {"START", 0x0010}, {"BACK", 0x0020}, {"SELECT", 0x0020},
+        {"L3", 0x0040}, {"LTHUMB", 0x0040}, {"R3", 0x0080}, {"RTHUMB", 0x0080},
+        {"LB", 0x0100}, {"LSHOULDER", 0x0100}, {"RB", 0x0200}, {"RSHOULDER", 0x0200},
+        {"A", 0x1000}, {"B", 0x2000}, {"X", 0x4000}, {"Y", 0x8000},
+    };
+    WORD result = 0;
+    char buf[64];
+    if (strlen(s) >= sizeof(buf)) return false;
+    strcpy(buf, s);
+    char* tok = buf;
+    while (tok) {
+        char* plus = strchr(tok, '+');
+        if (plus) *plus = 0;
+        cleanValue(tok);
+        bool found = false;
+        for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+            if (equalsNoCase(tok, table[i].name)) {
+                result |= table[i].bit;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+        tok = plus ? plus + 1 : NULL;
+    }
+    *mask = result;
+    return result != 0;
+}
+
+static void applyFile(const char* section, const char* file, const char* keyKey,
+                      const char* autoKey, const char* delayKey, const char* verifyKey) {
+    char val[64];
+    bool b;
+    long n;
+
+    if (keyKey && readCfg(section, keyKey, file, val, sizeof(val))) {
+        int k = parseKey(val);
+        if (k) cardInsertKey = k;
+    }
+    if (readCfg(section, autoKey, file, val, sizeof(val)) && parseBool(val, &b)) autoTap = b;
+    if (readCfg(section, delayKey, file, val, sizeof(val)) && parseInt(val, &n) && n >= 0) autoTapDelay = (DWORD)n;
+    if (readCfg(section, verifyKey, file, val, sizeof(val)) && parseBool(val, &b)) verifyPatch = b;
+}
+
 static void loadSettings() {
-    char keyStr[16] = {0};
+    // Defaults first, so removing a key from the file restores its default
+    cardInsertKey = 'C';
+    autoTap       = false;
+    autoTapDelay  = 1500;
+    verifyPatch   = false;
+    beepOnTap     = false;
+    padMask       = 0;
 
     // Legacy location: [settings] in card.ini (kept for backward compatibility)
-    GetPrivateProfileStringA("settings", "key", "C", keyStr, sizeof(keyStr), iniPath);
-    int k = parseKey(keyStr);
-    if (k) cardInsertKey = k;
-    autoTap      = GetPrivateProfileIntA("settings", "autoTap", 0, iniPath) != 0;
-    autoTapDelay = (DWORD)GetPrivateProfileIntA("settings", "autoTapDelayMs", 1500, iniPath);
-    verifyPatch  = GetPrivateProfileIntA("settings", "verifyPatch", 0, iniPath) != 0;
+    applyFile("settings", iniPath, "key", "autoTap", "autoTapDelayMs", "verifyPatch");
 
     // BanaConfig.ini overrides the legacy values
     if (!fileExists(configPath)) createConfig();
+    applyFile("BanaConfig", configPath, "ReadKey", "AutoRead", "AutoReadDelayMs", "VerifyPatch");
 
-    keyStr[0] = 0;
-    GetPrivateProfileStringA("BanaConfig", "ReadKey", "", keyStr, sizeof(keyStr), configPath);
-    k = parseKey(keyStr);
-    if (k) cardInsertKey = k;
-
-    int v = GetPrivateProfileIntA("BanaConfig", "AutoRead", -1, configPath);
-    if (v != -1) autoTap = (v != 0);
-    v = GetPrivateProfileIntA("BanaConfig", "AutoReadDelayMs", -1, configPath);
-    if (v >= 0) autoTapDelay = (DWORD)v;
-    v = GetPrivateProfileIntA("BanaConfig", "VerifyPatch", -1, configPath);
-    if (v != -1) verifyPatch = (v != 0);
+    char val[64];
+    bool b;
+    if (readCfg("BanaConfig", "BeepOnTap", configPath, val, sizeof(val)) && parseBool(val, &b)) beepOnTap = b;
+    if (readCfg("BanaConfig", "PadButton", configPath, val, sizeof(val))) {
+        WORD m = 0;
+        if (parsePadMask(val, &m)) {
+            padMask = m;
+        } else {
+            OutputDebugStringA("[BanaTap] PadButton value not recognised, gamepad tap disabled\n");
+        }
+    }
 }
 
 void reloadCard() {
@@ -227,19 +338,83 @@ void patchCardDataCheck(u64 patchOffset) {
     VirtualProtect(patchAddr, 5, oldProtect, &oldProtect);
 }
 
+// ---- gamepad (XInput, loaded on demand so there is no hard dependency) ------
+
+struct PadState {
+    DWORD packet;
+    WORD buttons;
+    BYTE leftTrigger;
+    BYTE rightTrigger;
+    SHORT thumbLX, thumbLY, thumbRX, thumbRY;
+};
+typedef DWORD (WINAPI *XInputGetStateFn)(DWORD, PadState*);
+
+static XInputGetStateFn xinputGetState = NULL;
+static bool xinputTried = false;
+
+static bool padPressed() {
+    if (!padMask) return false;
+    if (!xinputTried) {
+        xinputTried = true;
+        const char* dlls[] = {"xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll"};
+        for (int i = 0; i < 3 && !xinputGetState; i++) {
+            HMODULE m = LoadLibraryA(dlls[i]);
+            if (m) xinputGetState = (XInputGetStateFn)GetProcAddress(m, "XInputGetState");
+        }
+        if (!xinputGetState) OutputDebugStringA("[BanaTap] XInput not available, gamepad tap disabled\n");
+    }
+    if (!xinputGetState) return false;
+    for (DWORD i = 0; i < 4; i++) {
+        PadState st;
+        memset(&st, 0, sizeof(st));
+        if (xinputGetState(i, &st) == 0 && (st.buttons & padMask) == padMask) return true;
+    }
+    return false;
+}
+
+// ---- config file change detection --------------------------------------------
+
+static void fileTime(const char* path, FILETIME* out) {
+    WIN32_FILE_ATTRIBUTE_DATA d;
+    memset(&d, 0, sizeof(d));
+    memset(out, 0, sizeof(*out));
+    if (GetFileAttributesExA(path, GetFileExInfoStandard, &d)) *out = d.ftLastWriteTime;
+}
+
 DWORD WINAPI cardPollThread(LPVOID lpParam) {
     DWORD waitSince = 0;
     bool wasWaiting = false;
 
+    FILETIME cfgTime, iniTime;
+    fileTime(configPath, &cfgTime);
+    fileTime(iniPath, &iniTime);
+    DWORD lastCheck = GetTickCount();
+
     while (pollRunning) {
+        // Pick up edits to BanaConfig.ini / card.ini [settings] without a restart
+        DWORD now = GetTickCount();
+        if (now - lastCheck >= 1000) {
+            lastCheck = now;
+            FILETIME c, i;
+            fileTime(configPath, &c);
+            fileTime(iniPath, &i);
+            if (CompareFileTime(&c, &cfgTime) != 0 || CompareFileTime(&i, &iniTime) != 0) {
+                loadSettings();
+                fileTime(configPath, &cfgTime);
+                fileTime(iniPath, &iniTime);
+                OutputDebugStringA("[BanaTap] config reloaded\n");
+            }
+        }
+
         bool waiting = waitingForTouch;
         if (waiting && !wasWaiting) waitSince = GetTickCount();
         wasWaiting = waiting;
 
         bool keyDown = (GetAsyncKeyState(cardInsertKey) & 0x8000) != 0;
+        bool padDown = waiting && padPressed();
         bool autoDue = autoTap && waiting && (GetTickCount() - waitSince >= autoTapDelay);
 
-        if (waiting && (keyDown || autoDue)) {
+        if (waiting && (keyDown || padDown || autoDue)) {
             callbackTouch cb = touchCallback;
             u64 data = touchData;
             if (cb) {
@@ -249,6 +424,7 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
                 cb(0, 0, cardData, data);
                 waitingForTouch = false;
                 touchFinished   = true;
+                if (beepOnTap) MessageBeep(MB_OK);
             }
         }
         Sleep(16);
