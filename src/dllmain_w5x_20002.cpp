@@ -21,7 +21,10 @@ static uintptr_t imageBase;
 static void installHooks() {
     imageBase = (uintptr_t)GetModuleHandleA(NULL);
     
-    MH_Initialize();
+    if (MH_Initialize() != MH_OK) {
+        OutputDebugStringA("[BanaTap] MH_Initialize failed\n");
+        return;
+    }
     
     MH_CreateHook((void*)(imageBase + ADDR_BngRwAttach), (void*)BngRwAttach, NULL);
     MH_CreateHook((void*)(imageBase + ADDR_BngRwInit), (void*)BngRwInit, NULL);
@@ -35,7 +38,8 @@ static void installHooks() {
     MH_CreateHook((void*)(imageBase + ADDR_BngRwReqSendUrlTo), (void*)BngRwReqSendUrlTo, NULL);
     MH_CreateHook((void*)(imageBase + ADDR_BngRwReqWaitTouch), (void*)BngRwReqWaitTouch, NULL);
     
-    MH_EnableHook(MH_ALL_HOOKS);
+    if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK)
+        OutputDebugStringA("[BanaTap] MH_EnableHook failed\n");
 }
 
 BOOL WINAPI DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
@@ -47,6 +51,7 @@ BOOL WINAPI DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
         CreateThread(NULL, 0, cardPollThread, NULL, 0, NULL);
     }
     else if (reason == DLL_PROCESS_DETACH) {
+        shutdownBanapass();
         MH_DisableHook(MH_ALL_HOOKS);
         MH_Uninitialize();
     }

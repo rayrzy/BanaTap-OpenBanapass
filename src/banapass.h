@@ -2,13 +2,15 @@
 #define BANAPASS_H
 
 #include "helpers.h"
+#include <atomic>
 
 // Callback type
 typedef void (*callbackTouch)(i32, i32, u8*, u64);
 
-// Global state
-extern bool waitingForTouch;
-extern bool touchFinished;
+// Shared state (touched by game thread and poll thread)
+extern std::atomic<bool> waitingForTouch;
+extern std::atomic<bool> touchFinished;
+extern std::atomic<bool> pollRunning;
 extern u64 touchData;
 extern callbackTouch touchCallback;
 
@@ -20,10 +22,11 @@ extern int cardInsertKey;
 
 // Core functions
 void initBanapass();
+void shutdownBanapass();
 void reloadCard();
 void patchCardDataCheck(u64 patchOffset);
 
-// Key monitor thread
+// Key monitor / auto-tap thread
 DWORD WINAPI cardPollThread(LPVOID lpParam);
 
 // BngRw function declarations
