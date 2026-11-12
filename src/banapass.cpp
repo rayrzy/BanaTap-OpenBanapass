@@ -36,7 +36,8 @@ static const u8 cardDataTemplate[168] = {
 // ---------------------------------------------------------------------------
 // Settings / card.ini (stored next to the DLL, not in the process CWD)
 // ---------------------------------------------------------------------------
-static char iniPath[MAX_PATH] = ".\\card.ini";
+static char iniPath[MAX_PATH]    = ".\\card.ini";
+static char configPath[MAX_PATH] = ".\\BanaConfig.ini";
 
 static bool autoTap        = false; // [settings] autoTap=1
 static DWORD autoTapDelay  = 1500;  // [settings] autoTapDelayMs
@@ -53,9 +54,11 @@ static void resolveIniPath() {
             char* slash = strrchr(buf, '\\');
             if (slash) {
                 *(slash + 1) = 0;
-                if (strlen(buf) + strlen("card.ini") < MAX_PATH) {
+                if (strlen(buf) + strlen("BanaConfig.ini") < MAX_PATH) {
                     strcpy(iniPath, buf);
                     strcat(iniPath, "card.ini");
+                    strcpy(configPath, buf);
+                    strcat(configPath, "BanaConfig.ini");
                 }
             }
         }
@@ -106,24 +109,58 @@ static void createCard() {
     WritePrivateProfileStringA("card", "accessCode", buf, iniPath);
     makeChipId(buf);
     WritePrivateProfileStringA("card", "chipId", buf, iniPath);
-    // Write defaults so users can discover the options
-    WritePrivateProfileStringA("settings", "key", "C", iniPath);
-    WritePrivateProfileStringA("settings", "autoTap", "0", iniPath);
-    WritePrivateProfileStringA("settings", "autoTapDelayMs", "1500", iniPath);
-    WritePrivateProfileStringA("settings", "verifyPatch", "0", iniPath);
+}
+
+// BanaConfig.ini holds the behaviour options. Section/keys (ReadKey, AutoRead)
+// follow the layout used by other OpenBanapass builds; delay and verify
+// options are BanaTap additions.
+static void createConfig() {
+    WritePrivateProfileStringA("BanaConfig", "ReadKey", "C", configPath);
+    WritePrivateProfileStringA("BanaConfig", "AutoRead", "0", configPath);
+    WritePrivateProfileStringA("BanaConfig", "AutoReadDelayMs", "1500", configPath);
+    WritePrivateProfileStringA("BanaConfig", "VerifyPatch", "0", configPath);
+}
+
+// "C" / "c" -> 'C'; "67" or "0x43" -> virtual-key code. Returns 0 if invalid.
+static int parseKey(const char* s) {
+    while (*s == ' ' || *s == '\t') s++;
+    if (!*s) return 0;
+    if (s[1] == 0 || s[1] == ' ' || s[1] == '\t') {
+        char c = s[0];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        return (unsigned char)c;
+    }
+    char* end = NULL;
+    long v = strtol(s, &end, 0);
+    if (end == s || v < 1 || v > 255) return 0;
+    return (int)v;
 }
 
 static void loadSettings() {
-    char keyStr[8] = {0};
+    char keyStr[16] = {0};
+
+    // Legacy location: [settings] in card.ini (kept for backward compatibility)
     GetPrivateProfileStringA("settings", "key", "C", keyStr, sizeof(keyStr), iniPath);
-    if (keyStr[0]) {
-        char c = keyStr[0];
-        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
-        cardInsertKey = (unsigned char)c;
-    }
+    int k = parseKey(keyStr);
+    if (k) cardInsertKey = k;
     autoTap      = GetPrivateProfileIntA("settings", "autoTap", 0, iniPath) != 0;
     autoTapDelay = (DWORD)GetPrivateProfileIntA("settings", "autoTapDelayMs", 1500, iniPath);
     verifyPatch  = GetPrivateProfileIntA("settings", "verifyPatch", 0, iniPath) != 0;
+
+    // BanaConfig.ini overrides the legacy values
+    if (!fileExists(configPath)) createConfig();
+
+    keyStr[0] = 0;
+    GetPrivateProfileStringA("BanaConfig", "ReadKey", "", keyStr, sizeof(keyStr), configPath);
+    k = parseKey(keyStr);
+    if (k) cardInsertKey = k;
+
+    int v = GetPrivateProfileIntA("BanaConfig", "AutoRead", -1, configPath);
+    if (v != -1) autoTap = (v != 0);
+    v = GetPrivateProfileIntA("BanaConfig", "AutoReadDelayMs", -1, configPath);
+    if (v >= 0) autoTapDelay = (DWORD)v;
+    v = GetPrivateProfileIntA("BanaConfig", "VerifyPatch", -1, configPath);
+    if (v != -1) verifyPatch = (v != 0);
 }
 
 void reloadCard() {
@@ -243,6 +280,14 @@ EXPORT i32 BngRwReqCancel() { return 1; }
 EXPORT const char* BngRwGetVersion() { return "Ver 1.6.0"; }
 EXPORT u64 BngRwAttach(i32 a1, char* a2, i32 a3, i32 a4, void* callback, u64 a6) { return 1; }
 EXPORT i32 BngRwInit() { return 0; }
+
+// Aliases using the names found in other OpenBanapass builds / the original
+// Banapassport API, so games that resolve these by name still find them.
+// Arguments are ignored (Win64 calling convention: caller cleans up).
+EXPORT u64 BngRwExReadMifareAllBlock() { return 0xFFFFFF9C; }
+EXPORT u64 BngRwGetTotalRetryCount() { return 0; }
+EXPORT i32 BngRwReqSendMailTo() { return 1; }
+EXPORT u64 BngRwReqFwVersionup() { return 1; }
 
 EXPORT i32 BngRwReqWaitTouch(u32 a1, i32 a2, u32 a3, callbackTouch callback, u64 a5) {
     if (touchFinished) {

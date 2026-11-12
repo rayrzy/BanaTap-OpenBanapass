@@ -15,17 +15,19 @@ The chipId and accessCode within it will be randomly generated.
 
 In the game, press the `C` key on your keyboard to trigger the sending of card data.  
 
-`card.ini` is now looked up next to the DLL (not the process working directory) and
-may contain an optional `[settings]` section:
+`card.ini` and `BanaConfig.ini` are looked up next to the DLL (not the process working
+directory). `BanaConfig.ini` is created with defaults on first run:
 
 ```ini
-[settings]
-key=C             ; key used to "tap" the card
-autoTap=0         ; 1 = tap automatically when the game asks for a card
-autoTapDelayMs=1500
-verifyPatch=0     ; 1 = only NOP the patch site if it starts with a CALL (0xE8)
+[BanaConfig]
+ReadKey=C            ; letter, or a virtual-key code such as 67 / 0x43
+AutoRead=0           ; 1 = tap automatically when the game asks for a card
+AutoReadDelayMs=1500
+VerifyPatch=0        ; 1 = only NOP the patch site if it starts with a CALL (0xE8)
 ```
 
+The older `[settings]` section in `card.ini` (`key`, `autoTap`, `autoTapDelayMs`,
+`verifyPatch`) is still read; `BanaConfig.ini` wins when both are present.  
 Invalid `chipId` (must be 32 hex) / `accessCode` (must be 20 digits) values are regenerated.
 
 ## Supported revisions
