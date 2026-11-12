@@ -27,7 +27,8 @@ VerifyPatch=0        ; 1 = only NOP the patch site if it starts with a CALL (0xE
 ```
 
 The older `[settings]` section in `card.ini` (`key`, `autoTap`, `autoTapDelayMs`,
-`verifyPatch`) is still read; `BanaConfig.ini` wins when both are present.  
+`verifyPatch`) is still read; `BanaConfig.ini` wins when both are present.
+
 Invalid `chipId` (must be 32 hex) / `accessCode` (must be 20 digits) values are regenerated.
 
 ## Supported revisions
