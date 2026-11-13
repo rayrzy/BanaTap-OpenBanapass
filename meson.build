@@ -51,13 +51,7 @@ add_project_arguments('-DBANATAP_VERSION="' + bt_version + '"', language: 'cpp')
 windows = import('windows')
 windres = find_program('windres', required: false)
 
-rc_conf = configuration_data()
-rc_conf.set('BT_VERSION', bt_version)
-rc_conf.set('BT_REV', bt_rev)
 bt_ver_parts = meson.project_version().split('.')
-rc_conf.set('BT_VER_MAJOR', bt_ver_parts[0])
-rc_conf.set('BT_VER_MINOR', bt_ver_parts[1])
-rc_conf.set('BT_VER_PATCH', bt_ver_parts[2])
 
 # MinHook subproject
 minhook_proj = subproject('minhook')
@@ -68,61 +62,42 @@ common_sources = [
     'src/banapass.cpp',
 ]
 
-# Per-revision version resources (skipped when windres is not found)
-rc_wm5_10500 = []
-if windres.found()
-    rc_conf.set('BT_GAME', 'WM5 1.05.00')
-    rc_wm5_10500 = [windows.compile_resources(configure_file(
-        input: 'src/version.rc.in',
-        output: 'version_wm5_10500.rc',
-        configuration: rc_conf,
-    ))]
-endif
-rc_w5x_20002 = []
-if windres.found()
-    rc_conf.set('BT_GAME', 'W5X 2.00.02')
-    rc_w5x_20002 = [windows.compile_resources(configure_file(
-        input: 'src/version.rc.in',
-        output: 'version_w5x_20002.rc',
-        configuration: rc_conf,
-    ))]
-endif
-rc_w5p_30500 = []
-if windres.found()
-    rc_conf.set('BT_GAME', 'W5P 3.05.00')
-    rc_w5p_30500 = [windows.compile_resources(configure_file(
-        input: 'src/version.rc.in',
-        output: 'version_w5p_30500.rc',
-        configuration: rc_conf,
-    ))]
-endif
-rc_wm6_10304 = []
-if windres.found()
-    rc_conf.set('BT_GAME', 'WM6 1.03.04')
-    rc_wm6_10304 = [windows.compile_resources(configure_file(
-        input: 'src/version.rc.in',
-        output: 'version_wm6_10304.rc',
-        configuration: rc_conf,
-    ))]
-endif
-rc_w6r_20008 = []
-if windres.found()
-    rc_conf.set('BT_GAME', 'W6R 2.00.08')
-    rc_w6r_20008 = [windows.compile_resources(configure_file(
-        input: 'src/version.rc.in',
-        output: 'version_w6r_20008.rc',
-        configuration: rc_conf,
-    ))]
-endif
-rc_w6w_30503 = []
-if windres.found()
-    rc_conf.set('BT_GAME', 'W6W 3.05.03')
-    rc_w6w_30503 = [windows.compile_resources(configure_file(
-        input: 'src/version.rc.in',
-        output: 'version_w6w_30503.rc',
-        configuration: rc_conf,
-    ))]
-endif
+# Per-revision version resources (skipped when windres is not found).
+# Meson makes a configuration_data read-only once configure_file() has used
+# it, so every revision gets its own fresh object instead of reusing one.
+rc_revs = {
+    'wm5_10500': 'WM5 1.05.00',
+    'w5x_20002': 'W5X 2.00.02',
+    'w5p_30500': 'W5P 3.05.00',
+    'wm6_10304': 'WM6 1.03.04',
+    'w6r_20008': 'W6R 2.00.08',
+    'w6w_30503': 'W6W 3.05.03',
+}
+rc_res = {}
+foreach rev, game : rc_revs
+    rc_out = []
+    if windres.found()
+        rc_conf = configuration_data()
+        rc_conf.set('BT_VERSION', bt_version)
+        rc_conf.set('BT_REV', bt_rev)
+        rc_conf.set('BT_VER_MAJOR', bt_ver_parts[0])
+        rc_conf.set('BT_VER_MINOR', bt_ver_parts[1])
+        rc_conf.set('BT_VER_PATCH', bt_ver_parts[2])
+        rc_conf.set('BT_GAME', game)
+        rc_out = [windows.compile_resources(configure_file(
+            input: 'src/version.rc.in',
+            output: 'version_' + rev + '.rc',
+            configuration: rc_conf,
+        ))]
+    endif
+    rc_res += {rev: rc_out}
+endforeach
+rc_wm5_10500 = rc_res['wm5_10500']
+rc_w5x_20002 = rc_res['w5x_20002']
+rc_w5p_30500 = rc_res['w5p_30500']
+rc_wm6_10304 = rc_res['wm6_10304']
+rc_w6r_20008 = rc_res['w6r_20008']
+rc_w6w_30503 = rc_res['w6w_30503']
 
 # WM5 1.05.00
 library(
