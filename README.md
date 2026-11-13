@@ -30,6 +30,8 @@ OnlyWhenFocused=1    ; 1 = ignore all taps unless the game window is in the fore
 AutoReadMode=always  ; always = auto tap on every card request, once = only the first one
 AutoReadCooldownMs=0 ; minimum time after a tap before auto tap may fire again
 ToggleAutoKey=       ; key that switches auto tap on/off while playing, e.g. F9 (empty = off)
+LogToFile=1          ; 1 = write banatap.log next to the DLL (also sent to DebugView)
+LogExceptions=1      ; 1 = note serious exceptions (access violation, ...) in the log
 ```
 
 Notes:
@@ -50,6 +52,16 @@ Notes:
 - `card.ini` is never modified after it has been created. If `chipId`/`accessCode` are missing
   the card is not sent; if they look unusual they are sent exactly as written and a warning
   goes to the debug log. A new random card is only generated when `card.ini` does not exist.
+- `banatap.log` is created next to the DLL and restarted when it grows past 256 KB. It records
+  the patch site check, hook results, card requests, which trigger sent the card, config
+  reloads and warnings. `chipId` and `accessCode` are never written to it, so it is safe to
+  share when asking for help. Lines also go to DebugView.
+- If the game never gets a card, look in the log for `not in the foreground` (see
+  `OnlyWhenFocused`), `card not sent` (missing values in `card.ini`) or `patch site ... UNEXPECTED`
+  (the patch offset does not match your game revision).
+- `LogExceptions` adds a line for access violations and similar first-chance exceptions with the
+  module and offset. The game may handle some of them itself, so treat a line as a lead rather
+  than proof of a crash. At most 20 lines per run.
 - Changes to `BanaConfig.ini` are picked up within about a second, no restart needed.
   Removing a key restores its default.
 

@@ -1,5 +1,6 @@
 #include "banapass.h"
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -18,6 +19,48 @@ char chipId[33]     = "00000000000000000000000000000000";
 u8 cardData[168];
 
 int cardInsertKey = 'C';
+
+// ---------------------------------------------------------------------------
+// Logging: OutputDebugString (DebugView) and, optionally, banatap.log next to
+// the DLL. Card identifiers (chipId / accessCode) are never written to the log.
+// ---------------------------------------------------------------------------
+static char logPath[MAX_PATH] = ".\\banatap.log";
+static bool logToFile         = true;  // [BanaConfig] LogToFile=0 disables the file
+static bool logExceptions     = true;  // [BanaConfig] LogExceptions=0 disables crash notes
+static const DWORD LOG_MAX_BYTES = 256 * 1024;
+static std::atomic_flag logLock = ATOMIC_FLAG_INIT;
+
+void bnLog(const char* fmt, ...) {
+    char body[400];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(body, sizeof(body), fmt, ap);
+    va_end(ap);
+    body[sizeof(body) - 1] = 0;
+
+    char dbg[448];
+    snprintf(dbg, sizeof(dbg), "[BanaTap] %s\n", body);
+    OutputDebugStringA(dbg);
+
+    if (!logToFile) return;
+
+    // Bounded wait: a thread that crashed while logging must not hang the others
+    bool locked = false;
+    for (int i = 0; i < 50 && !locked; i++) {
+        locked = !logLock.test_and_set();
+        if (!locked) Sleep(1);
+    }
+    if (!locked) return;
+
+    FILE* f = fopen(logPath, "ab");
+    if (f) {
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        fprintf(f, "[%02d:%02d:%02d.%03d] %s\r\n", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, body);
+        fclose(f);
+    }
+    logLock.clear();
+}
 
 static const u8 cardDataTemplate[168] = {
     0x01, 0x01, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x92, 0x2E, 0x58, 0x32,
@@ -70,6 +113,10 @@ static void resolveIniPath() {
                     strcat(iniPath, "card.ini");
                     strcpy(configPath, buf);
                     strcat(configPath, "BanaConfig.ini");
+                    if (strlen(buf) + strlen("banatap.log") < MAX_PATH) {
+                        strcpy(logPath, buf);
+                        strcat(logPath, "banatap.log");
+                    }
                 }
             }
         }
@@ -136,6 +183,8 @@ static void createConfig() {
     WritePrivateProfileStringA("BanaConfig", "AutoReadMode", "always", configPath);
     WritePrivateProfileStringA("BanaConfig", "AutoReadCooldownMs", "0", configPath);
     WritePrivateProfileStringA("BanaConfig", "ToggleAutoKey", "", configPath);
+    WritePrivateProfileStringA("BanaConfig", "LogToFile", "1", configPath);
+    WritePrivateProfileStringA("BanaConfig", "LogExceptions", "1", configPath);
 }
 
 static bool equalsNoCase(const char* a, const char* b);
@@ -287,6 +336,8 @@ static void loadSettings() {
     autoOnce      = false;
     autoCooldown  = 0;
     toggleKey     = 0;
+    logToFile     = true;
+    logExceptions = true;
 
     // Legacy location: [settings] in card.ini (kept for backward compatibility)
     applyFile("settings", iniPath, "key", "autoTap", "autoTapDelayMs", "verifyPatch");
@@ -302,17 +353,19 @@ static void loadSettings() {
     if (readCfg("BanaConfig", "AutoReadMode", configPath, val, sizeof(val))) {
         if (equalsNoCase(val, "once")) autoOnce = true;
         else if (equalsNoCase(val, "always")) autoOnce = false;
-        else OutputDebugStringA("[BanaTap] AutoReadMode must be 'always' or 'once', keeping 'always'\n");
+        else bnLog("AutoReadMode must be 'always' or 'once', keeping 'always'");
     }
     long cd;
     if (readCfg("BanaConfig", "AutoReadCooldownMs", configPath, val, sizeof(val)) && parseInt(val, &cd) && cd >= 0) autoCooldown = (DWORD)cd;
     if (readCfg("BanaConfig", "ToggleAutoKey", configPath, val, sizeof(val))) toggleKey = parseKey(val);
+    if (readCfg("BanaConfig", "LogToFile", configPath, val, sizeof(val)) && parseBool(val, &b)) logToFile = b;
+    if (readCfg("BanaConfig", "LogExceptions", configPath, val, sizeof(val)) && parseBool(val, &b)) logExceptions = b;
     if (readCfg("BanaConfig", "PadButton", configPath, val, sizeof(val))) {
         WORD m = 0;
         if (parsePadMask(val, &m)) {
             padMask = m;
         } else {
-            OutputDebugStringA("[BanaTap] PadButton value not recognised, gamepad tap disabled\n");
+            bnLog("PadButton value not recognised, gamepad tap disabled");
         }
     }
 }
@@ -335,7 +388,7 @@ bool reloadCard() {
         DWORD now = GetTickCount();
         if (lastMissingWarn == 0 || now - lastMissingWarn > 5000) {
             lastMissingWarn = now ? now : 1;
-            OutputDebugStringA("[BanaTap] card.ini has no chipId/accessCode under [card]; card not sent\n");
+            bnLog("card.ini has no chipId/accessCode under [card]; card not sent");
         }
         return false;
     }
@@ -343,7 +396,7 @@ bool reloadCard() {
     bool formatOk = validAccessCode(ac) && validChipId(ci);
     if (!formatOk && !warnedFormat) {
         warnedFormat = true;
-        OutputDebugStringA("[BanaTap] chipId (32 hex) / accessCode (20 digits) look unusual; sending them as written\n");
+        bnLog("chipId (32 hex) / accessCode (20 digits) look unusual; sending them as written");
     }
     if (formatOk) warnedFormat = false;
 
@@ -354,20 +407,66 @@ bool reloadCard() {
     return true;
 }
 
+// Passive vectored exception handler: notes serious first-chance exceptions
+// (with module and offset) in the log, then lets the normal handling continue.
+// The game may handle some of these itself, so a line here is a lead, not
+// proof of a crash. At most 20 entries per run.
+static PVOID vehHandle = NULL;
+static std::atomic<int> vehLogged(0);
+
+static LONG WINAPI exceptionLogger(EXCEPTION_POINTERS* ep) {
+    if (!logExceptions || !ep || !ep->ExceptionRecord) return 0; // EXCEPTION_CONTINUE_SEARCH
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    bool serious = code == 0xC0000005 || code == 0xC0000006 || code == 0xC000001D ||
+                   code == 0xC0000094 || code == 0xC0000096 || code == 0xC00000FD;
+    if (!serious) return 0;
+    if (vehLogged.fetch_add(1) >= 20) return 0;
+
+    void* addr = ep->ExceptionRecord->ExceptionAddress;
+    HMODULE mod = NULL;
+    char path[MAX_PATH] = "?";
+    const char* name = path;
+    unsigned long offset = 0;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)addr, &mod) && mod) {
+        if (GetModuleFileNameA(mod, path, MAX_PATH) > 0) {
+            const char* slash = strrchr(path, '\\');
+            name = slash ? slash + 1 : path;
+        }
+        offset = (unsigned long)((char*)addr - (char*)mod);
+    }
+    bnLog("exception 0x%08lX at %p (%s +0x%lX), first chance", (unsigned long)code, addr, name, offset);
+    return 0;
+}
+
 void initBanapass() {
     resolveIniPath();
+
+    // Keep the log small: start over if it has grown past the limit
+    WIN32_FILE_ATTRIBUTE_DATA logInfo;
+    if (GetFileAttributesExA(logPath, GetFileExInfoStandard, &logInfo) &&
+        (logInfo.nFileSizeHigh != 0 || logInfo.nFileSizeLow > LOG_MAX_BYTES)) {
+        DeleteFileA(logPath);
+    }
+    bnLog("---- BanaTap started (game base %p) ----", (void*)GetModuleHandle(NULL));
     if (!fileExists(iniPath)) {
         createCard();
-        OutputDebugStringA("[BanaTap] card.ini not found: generated a NEW random card identity\n");
+        bnLog("WARNING: card.ini not found, generated a NEW random card identity (new account on the server)");
     }
     loadSettings();
     memcpy(cardData, cardDataTemplate, 168);
     reloadCard();
     pollRunning = true;
+    if (!vehHandle) vehHandle = AddVectoredExceptionHandler(1, exceptionLogger);
 }
 
 void shutdownBanapass() {
     pollRunning = false; // thread exits on its next iteration
+    if (vehHandle) {
+        RemoveVectoredExceptionHandler(vehHandle);
+        vehHandle = NULL;
+    }
+    bnLog("---- BanaTap shutdown ----");
 }
 
 // Patch the game's card data clearing function call with NOPs.
@@ -375,13 +474,16 @@ void shutdownBanapass() {
 // resulting in empty card data being sent to the server.
 void patchCardDataCheck(u64 patchOffset) {
     HMODULE gameModule = GetModuleHandle(NULL);
-    if (!gameModule) return;
+    if (!gameModule) {
+        bnLog("patch skipped: GetModuleHandle(NULL) failed");
+        return;
+    }
 
     u8* patchAddr = (u8*)gameModule + patchOffset;
     DWORD oldProtect;
 
     if (!VirtualProtect(patchAddr, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        OutputDebugStringA("[BanaTap] VirtualProtect failed, card data patch not applied\n");
+        bnLog("patch not applied: VirtualProtect failed (error %lu)", (unsigned long)GetLastError());
         return;
     }
 
@@ -389,16 +491,15 @@ void patchCardDataCheck(u64 patchOffset) {
     bool isNop  = (patchAddr[0] == 0x90 && patchAddr[1] == 0x90 && patchAddr[2] == 0x90 &&
                    patchAddr[3] == 0x90 && patchAddr[4] == 0x90);
 
-    char msg[96];
-    sprintf(msg, "[BanaTap] patch @+0x%llX first byte = 0x%02X\n",
-            (unsigned long long)patchOffset, patchAddr[0]);
-    OutputDebugStringA(msg);
+    bnLog("patch site +0x%lX: first byte 0x%02X (%s)", (unsigned long)patchOffset, patchAddr[0],
+          isCall ? "call" : (isNop ? "already NOP" : "UNEXPECTED"));
 
     if (verifyPatch && !isCall && !isNop) {
-        OutputDebugStringA("[BanaTap] unexpected bytes at patch offset (wrong game revision?), skipped\n");
+        bnLog("patch skipped: unexpected bytes (wrong game revision?) and VerifyPatch=1");
     } else {
         memset(patchAddr, 0x90, 5);
         FlushInstructionCache(GetCurrentProcess(), patchAddr, 5);
+        bnLog("patch applied");
     }
     VirtualProtect(patchAddr, 5, oldProtect, &oldProtect);
 }
@@ -426,7 +527,7 @@ static bool padPressed() {
             HMODULE m = LoadLibraryA(dlls[i]);
             if (m) xinputGetState = (XInputGetStateFn)GetProcAddress(m, "XInputGetState");
         }
-        if (!xinputGetState) OutputDebugStringA("[BanaTap] XInput not available, gamepad tap disabled\n");
+        if (!xinputGetState) bnLog("XInput not available, gamepad tap disabled");
     }
     if (!xinputGetState) return false;
     for (DWORD i = 0; i < 4; i++) {
@@ -435,6 +536,16 @@ static bool padPressed() {
         if (xinputGetState(i, &st) == 0 && (st.buttons & padMask) == padMask) return true;
     }
     return false;
+}
+
+// Is p a committed, executable address? Guards against calling a stale or
+// garbage callback pointer handed over by the game.
+static bool isExecutable(const void* p) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!p || VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) return false;
+    return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
 }
 
 // True if the foreground window belongs to this (game) process.
@@ -459,6 +570,8 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
     DWORD waitSince = 0;
     bool wasWaiting = false;
     bool toggleWasDown = false;
+    DWORD lastFocusHint = 0;
+    DWORD lastBadCb = 0;
 
     FILETIME cfgTime, iniTime;
     fileTime(configPath, &cfgTime);
@@ -477,12 +590,15 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
                 loadSettings();
                 fileTime(configPath, &cfgTime);
                 fileTime(iniPath, &iniTime);
-                OutputDebugStringA("[BanaTap] config reloaded\n");
+                bnLog("config reloaded");
             }
         }
 
         bool waiting = waitingForTouch;
-        if (waiting && !wasWaiting) waitSince = GetTickCount();
+        if (waiting && !wasWaiting) {
+            waitSince = GetTickCount();
+            bnLog("game is waiting for a card");
+        }
         wasWaiting = waiting;
 
         bool focused = !onlyFocused || gameFocused();
@@ -496,12 +612,20 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
                 sessionTapped = false;
                 hasTapped     = false;
             }
-            OutputDebugStringA(autoTap ? "[BanaTap] auto tap ON\n" : "[BanaTap] auto tap OFF\n");
+            bnLog(autoTap ? "auto tap ON" : "auto tap OFF");
             if (beepOnTap) MessageBeep(autoTap ? MB_ICONASTERISK : MB_ICONEXCLAMATION);
         }
         toggleWasDown = toggleDown;
 
-        bool keyDown = focused && (GetAsyncKeyState(cardInsertKey) & 0x8000) != 0;
+        bool rawKey  = (GetAsyncKeyState(cardInsertKey) & 0x8000) != 0;
+        bool keyDown = focused && rawKey;
+        if (waiting && rawKey && !focused) {
+            DWORD t = GetTickCount();
+            if (lastFocusHint == 0 || t - lastFocusHint > 5000) {
+                lastFocusHint = t ? t : 1;
+                bnLog("tap key pressed but the game window is not in the foreground (OnlyWhenFocused=1)");
+            }
+        }
         bool padDown = waiting && focused && padPressed();
 
         bool autoDue = autoTap && focused && waiting &&
@@ -512,10 +636,18 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
         if (waiting && (keyDown || padDown || autoDue)) {
             callbackTouch cb = touchCallback;
             u64 data = touchData;
-            if (cb && reloadCard()) {
+            if (cb && !isExecutable((const void*)cb)) {
+                DWORD t = GetTickCount();
+                if (lastBadCb == 0 || t - lastBadCb > 5000) {
+                    lastBadCb = t ? t : 1;
+                    bnLog("callback pointer %p is not executable memory, request dropped", (void*)cb);
+                }
+                waitingForTouch = false;
+            } else if (cb && reloadCard()) {
                 memcpy(cardData + 0x2C, chipId, 33);
                 memcpy(cardData + 0x50, accessCode, 21);
                 cb(0, 0, cardData, data);
+                bnLog("card sent (%s)", keyDown ? "key" : (padDown ? "gamepad" : "auto"));
                 waitingForTouch = false;
                 touchFinished   = true;
                 sessionTapped   = true;

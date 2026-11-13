@@ -20,6 +20,9 @@ extern u8 cardData[168];
 
 extern int cardInsertKey;
 
+// Logging (DebugView + optional banatap.log). Never pass card identifiers to it.
+void bnLog(const char* fmt, ...);
+
 // Core functions
 void initBanapass();
 void shutdownBanapass();
