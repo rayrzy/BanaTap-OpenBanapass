@@ -83,8 +83,6 @@ Notes:
 The older `[settings]` section in `card.ini` (`key`, `autoTap`, `autoTapDelayMs`,
 `verifyPatch`) is still read; `BanaConfig.ini` wins when both are present.
 
-Invalid `chipId` (must be 32 hex) / `accessCode` (must be 20 digits) values are regenerated.
-
 ## Supported revisions
 
 | Game | Revision | Output file |
@@ -95,6 +93,25 @@ Invalid `chipId` (must be 32 hex) / `accessCode` (must be 20 digits) values are 
 | WMMT6 | `1.03.04` | `dist/wm6/1.03.04/bngrw.dll` |
 | WMMT6R | `2.00.08` | `dist/w6r/2.00.08/bngrw.dll` |
 | WMMT6RR | `3.05.03` | `dist/w6w/3.05.03/bngrw.dll` |
+
+## Download
+
+You do not have to build anything yourself. GitHub Actions builds all six DLLs on every push:
+
+- **Latest build:** open the repository's **Actions** tab, pick the newest run of the `Build`
+  workflow and download the `BanaTap-dlls` artifact. It contains the `dist/` layout shown below
+  and a `SHA256SUMS.txt` file.
+- **Releases:** pushing a tag such as `v1.1.0` publishes `BanaTap-v1.1.0.zip` and its `.sha256`
+  file on the Releases page. The tag must match the `version` in `meson.build`, otherwise the
+  workflow stops with a message.
+
+Check a download from the extracted folder: `sha256sum -c SHA256SUMS.txt` (Linux/MSYS2), or
+`Get-FileHash <file> -Algorithm SHA256` in PowerShell and compare it with the listed value.
+Copy the DLL for your revision next to the game executable and rename nothing: every file is
+already called `bngrw.dll`.
+
+A separate `Logic tests (Linux)` job runs `tests/check.sh` and `tests/run.sh` first; see
+`tests/README.md`.
 
 ## Build
 
