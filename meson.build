@@ -27,6 +27,8 @@ add_project_link_arguments(
         '-s',
         '-static-libgcc',
         '-static-libstdc++',
+    ),
+    cpp.get_supported_link_arguments(
         '-Wl,--gc-sections',
         '-Wl,--exclude-all-symbols',
     ),

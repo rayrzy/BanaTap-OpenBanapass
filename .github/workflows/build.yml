@@ -19,7 +19,7 @@ jobs:
     name: Logic tests (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Syntax-check every source
         run: ./tests/check.sh
@@ -35,13 +35,16 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # full history and tags, so `git describe` works for the version
 
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          # MINGW64 (msvcrt) is kept on purpose: its DLLs run on older Windows
+          # versions where the UCRT may be missing.
+          suppress-deprecation-warnings: msystem-mingw64
           update: false
           install: >-
             git
@@ -63,6 +66,10 @@ jobs:
       - name: Build
         run: |
           git config --global --add safe.directory '*'
+          # The checkout was made by another git; refresh the index so
+          # `git describe --dirty` does not report a clean tree as dirty.
+          git update-index -q --refresh || true
+          echo "version string: $(git describe --always --dirty --tags)"
           ./build.sh
 
       - name: Checksums
