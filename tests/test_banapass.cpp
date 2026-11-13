@@ -204,6 +204,26 @@ int main(){
   CHECK(slurp(".\\banatap.log").find("api: BngRwReqBeep called")==std::string::npos);
   CHECK(slurp(".\\banatap.log").find("BanaTap dev started")!=std::string::npos);
 
+  // --- L: the log makes once / always visible
+  auto countIn=[&](const char* what){ std::string L=slurp(".\\banatap.log"); size_t n=0,pos=0; while((pos=L.find(what,pos))!=std::string::npos){n++;pos++;} return n; };
+  ms(1100);
+  put(".\\BanaConfig.ini","[BanaConfig]\nReadKey=C\nAutoRead=1\nAutoReadDelayMs=50\nAutoReadMode=once\n");
+  ms(1300);
+  CHECK(slurp(".\\banatap.log").find("autoRead=on mode=once")!=std::string::npos);
+  { size_t skips=countIn("auto tap skipped: AutoReadMode=once"); int b6=taps;
+    finish(); waitTouch(); ms(500);
+    CHECK(taps==b6);                                          // once: second request is not auto tapped
+    CHECK(countIn("auto tap skipped: AutoReadMode=once")==skips+1);   // ... and the log says why, once
+    ms(500);
+    CHECK(countIn("auto tap skipped: AutoReadMode=once")==skips+1);
+    ms(1100);
+    put(".\\BanaConfig.ini","[BanaConfig]\nReadKey=C\nAutoRead=1\nAutoReadDelayMs=50\nAutoReadMode=always\n");
+    ms(1300);
+    CHECK(slurp(".\\banatap.log").find("autoRead=on mode=always")!=std::string::npos);
+    CHECK(taps==b6+1);                                        // always: the pending request is served
+    CHECK(slurp(".\\banatap.log").find("card sent (auto), #")!=std::string::npos);
+    CHECK(slurp(".\\banatap.log").find("BanaConfig.ini: ")!=std::string::npos); }
+
   shutdownBanapass(); th.join();
   printf("\n%s (%d failures)\n", fails?"FAILED":"ALL PASSED", fails);
   return fails?1:0;

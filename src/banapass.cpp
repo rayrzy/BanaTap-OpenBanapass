@@ -383,6 +383,11 @@ static void loadSettings() {
             bnLog("PadButton value not recognised, gamepad tap disabled");
         }
     }
+
+    bnLog("settings: tapKey=%d autoRead=%s mode=%s delay=%lums cooldown=%lums focusOnly=%s padMask=0x%04X toggleKey=%d",
+          cardInsertKey, autoTap ? "on" : "off", autoOnce ? "once" : "always",
+          (unsigned long)autoTapDelay, (unsigned long)autoCooldown, onlyFocused ? "yes" : "no",
+          (unsigned)padMask, toggleKey);
 }
 
 // Reads chipId/accessCode from card.ini. The file is never modified here:
@@ -464,6 +469,8 @@ void initBanapass() {
         DeleteFileA(logPath);
     }
     bnLog("---- BanaTap %s started (game base %p) ----", BANATAP_VERSION, (void*)GetModuleHandle(NULL));
+    bnLog("card.ini: %s (%s)", iniPath, fileExists(iniPath) ? "found" : "missing");
+    bnLog("BanaConfig.ini: %s (%s)", configPath, fileExists(configPath) ? "found" : "missing");
     if (!fileExists(iniPath)) {
         createCard();
         bnLog("WARNING: card.ini not found, generated a NEW random card identity (new account on the server)");
@@ -587,6 +594,8 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
     bool toggleWasDown = false;
     DWORD lastFocusHint = 0;
     DWORD lastBadCb = 0;
+    bool skipLogged = false;
+    unsigned sentCount = 0;
 
     FILETIME cfgTime, iniTime;
     fileTime(configPath, &cfgTime);
@@ -612,6 +621,7 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
         bool waiting = waitingForTouch;
         if (waiting && !wasWaiting) {
             waitSince = GetTickCount();
+            skipLogged = false;
             bnLog("game is waiting for a card");
         }
         wasWaiting = waiting;
@@ -643,10 +653,18 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
         }
         bool padDown = waiting && focused && padPressed();
 
-        bool autoDue = autoTap && focused && waiting &&
-                       (GetTickCount() - waitSince >= autoTapDelay) &&
-                       !(autoOnce && sessionTapped) &&
-                       !(hasTapped && GetTickCount() - lastTapTick < autoCooldown);
+        DWORD sinceTap     = hasTapped ? GetTickCount() - lastTapTick : 0;
+        bool autoReady     = autoTap && focused && waiting && (GetTickCount() - waitSince >= autoTapDelay);
+        bool blockedByOnce = autoOnce && sessionTapped;
+        bool blockedByCool = hasTapped && sinceTap < autoCooldown;
+        bool autoDue       = autoReady && !blockedByOnce && !blockedByCool;
+        if (autoReady && !autoDue && !skipLogged) {
+            skipLogged = true;
+            if (blockedByOnce)
+                bnLog("auto tap skipped: AutoReadMode=once and a card was already sent (tap manually, or press the toggle key twice to re-arm)");
+            else
+                bnLog("auto tap skipped: cooldown, %lu ms left", (unsigned long)(autoCooldown - sinceTap));
+        }
 
         if (waiting && (keyDown || padDown || autoDue)) {
             callbackTouch cb = touchCallback;
@@ -666,7 +684,7 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
                 memcpy(cardData + 0x50, accessCode, strlen(accessCode) + 1);
                 memcpy(cardData + 0x2C, chipId, strlen(chipId) + 1);
                 cb(0, 0, cardData, data);
-                bnLog("card sent (%s)", keyDown ? "key" : (padDown ? "gamepad" : "auto"));
+                bnLog("card sent (%s), #%u", keyDown ? "key" : (padDown ? "gamepad" : "auto"), ++sentCount);
                 waitingForTouch = false;
                 touchFinished   = true;
                 sessionTapped   = true;

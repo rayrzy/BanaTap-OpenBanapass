@@ -63,6 +63,11 @@ Notes:
 - If the game never gets a card, look in the log for `not in the foreground` (see
   `OnlyWhenFocused`), `card not sent` (missing values in `card.ini`) or `patch site ... UNEXPECTED`
   (the patch offset does not match your game revision).
+- To check that `AutoReadMode` was understood, look for the `settings:` line (written at start and
+  after every config reload, for example `autoRead=on mode=once`) and for `auto tap skipped:`, which
+  names the reason (once or cooldown) the first time a card request is not served automatically.
+  `card sent (auto), #3` shows how many cards were sent in this run. The `BanaConfig.ini:` line near
+  the top shows exactly which file the DLL reads, and whether it was found.
 - `LogExceptions` adds a line for access violations and similar first-chance exceptions with the
   module and offset. The game may handle some of them itself, so treat a line as a lead rather
   than proof of a crash. At most 20 lines per run.
