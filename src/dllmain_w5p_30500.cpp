@@ -32,12 +32,12 @@ static void hook(const char* name, uintptr_t addr, void* detour) {
 
 static void installHooks() {
     imageBase = (uintptr_t)GetModuleHandleA(NULL);
-    
+
     if (MH_Initialize() != MH_OK) {
         bnLog("MH_Initialize failed");
         return;
     }
-    
+
     hook("BngRwAttach", imageBase + ADDR_BngRwAttach, (void*)BngRwAttach);
     hook("BngRwInit", imageBase + ADDR_BngRwInit, (void*)BngRwInit);
     hook("BngRwFin", imageBase + ADDR_BngRwFin, (void*)BngRwFin);
@@ -49,7 +49,7 @@ static void installHooks() {
     hook("BngRwReqCancel", imageBase + ADDR_BngRwReqCancel, (void*)BngRwReqCancel);
     hook("BngRwReqSendUrlTo", imageBase + ADDR_BngRwReqSendUrlTo, (void*)BngRwReqSendUrlTo);
     hook("BngRwReqWaitTouch", imageBase + ADDR_BngRwReqWaitTouch, (void*)BngRwReqWaitTouch);
-    
+
     MH_STATUS st = MH_EnableHook(MH_ALL_HOOKS);
     if (st != MH_OK)
         bnLog("MH_EnableHook failed: %s", MH_StatusToString(st));

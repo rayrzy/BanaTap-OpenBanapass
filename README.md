@@ -185,4 +185,4 @@ The output file is located in the `dist/` directory.
 ## Special thanks
 
 - [OpenBanapass](https://github.com/ProjectAsakura/OpenBanapass)  
-- [WanganArcadeLoader](https://github.com/vixen256/WanganArcadeLoader)  
+- [WanganArcadeLoader](https://github.com/vixen256/WanganArcadeLoader)

@@ -68,7 +68,6 @@ common_sources = [
     'src/banapass.cpp',
 ]
 
-
 # Per-revision version resources (skipped when windres is not found)
 rc_wm5_10500 = []
 if windres.found()
