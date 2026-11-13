@@ -7,6 +7,11 @@
 
 #define EXPORT __declspec(dllexport)
 
+// Set by the build (see meson.build): project version plus git revision
+#ifndef BANATAP_VERSION
+#define BANATAP_VERSION "dev"
+#endif
+
 // Global state
 std::atomic<bool> waitingForTouch(false);
 std::atomic<bool> touchFinished(false);
@@ -27,6 +32,8 @@ int cardInsertKey = 'C';
 static char logPath[MAX_PATH] = ".\\banatap.log";
 static bool logToFile         = true;  // [BanaConfig] LogToFile=0 disables the file
 static bool logExceptions     = true;  // [BanaConfig] LogExceptions=0 disables crash notes
+static bool logApiCalls       = true;  // [BanaConfig] LogApiCalls=0 disables the first-call trace
+static bool strictApi         = false; // [BanaConfig] StrictApi=1 rejects invalid arguments with -100
 static const DWORD LOG_MAX_BYTES = 256 * 1024;
 static std::atomic_flag logLock = ATOMIC_FLAG_INIT;
 
@@ -185,6 +192,8 @@ static void createConfig() {
     WritePrivateProfileStringA("BanaConfig", "ToggleAutoKey", "", configPath);
     WritePrivateProfileStringA("BanaConfig", "LogToFile", "1", configPath);
     WritePrivateProfileStringA("BanaConfig", "LogExceptions", "1", configPath);
+    WritePrivateProfileStringA("BanaConfig", "LogApiCalls", "1", configPath);
+    WritePrivateProfileStringA("BanaConfig", "StrictApi", "0", configPath);
 }
 
 static bool equalsNoCase(const char* a, const char* b);
@@ -338,6 +347,8 @@ static void loadSettings() {
     toggleKey     = 0;
     logToFile     = true;
     logExceptions = true;
+    logApiCalls   = true;
+    strictApi     = false;
 
     // Legacy location: [settings] in card.ini (kept for backward compatibility)
     applyFile("settings", iniPath, "key", "autoTap", "autoTapDelayMs", "verifyPatch");
@@ -360,6 +371,8 @@ static void loadSettings() {
     if (readCfg("BanaConfig", "ToggleAutoKey", configPath, val, sizeof(val))) toggleKey = parseKey(val);
     if (readCfg("BanaConfig", "LogToFile", configPath, val, sizeof(val)) && parseBool(val, &b)) logToFile = b;
     if (readCfg("BanaConfig", "LogExceptions", configPath, val, sizeof(val)) && parseBool(val, &b)) logExceptions = b;
+    if (readCfg("BanaConfig", "LogApiCalls", configPath, val, sizeof(val)) && parseBool(val, &b)) logApiCalls = b;
+    if (readCfg("BanaConfig", "StrictApi", configPath, val, sizeof(val)) && parseBool(val, &b)) strictApi = b;
     if (readCfg("BanaConfig", "PadButton", configPath, val, sizeof(val))) {
         WORD m = 0;
         if (parsePadMask(val, &m)) {
@@ -448,7 +461,7 @@ void initBanapass() {
         (logInfo.nFileSizeHigh != 0 || logInfo.nFileSizeLow > LOG_MAX_BYTES)) {
         DeleteFileA(logPath);
     }
-    bnLog("---- BanaTap started (game base %p) ----", (void*)GetModuleHandle(NULL));
+    bnLog("---- BanaTap %s started (game base %p) ----", BANATAP_VERSION, (void*)GetModuleHandle(NULL));
     if (!fileExists(iniPath)) {
         createCard();
         bnLog("WARNING: card.ini not found, generated a NEW random card identity (new account on the server)");
@@ -661,40 +674,84 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// BngRw API
+//
+// Argument checks follow the reader API used by other OpenBanapass builds:
+// reader numbers above 7 and missing string arguments are rejected with
+// -100. They are only enforced with [BanaConfig] StrictApi=1; by default the
+// stubs accept everything, which is what BanaTap always did. (Another build
+// rejects BngRwReqLatchID for reader numbers *below* 8, the opposite of its
+// sibling functions; that looks like an inverted check and is not copied.)
+//
+// BngRwExReadMifareAllBlock returns 0xFFFFFF9C as a 64-bit value, exactly as
+// the reference implementation does. It is deliberately not sign-extended.
+// ---------------------------------------------------------------------------
+#define BNGRW_ERR_ARG ((i32)-100)
+#define BNGRW_MAX_READER 7u
+
+// Logs the first call of each export (names only, never arguments)
+#define API_TRACE(name)                                              \
+    do {                                                             \
+        static std::atomic<bool> seen(false);                        \
+        if (logApiCalls && !seen.exchange(true))                     \
+            bnLog("api: %s called by the game", name);               \
+    } while (0)
+
 extern "C" {
 
-EXPORT u64 BngRwDevReset() { return 0; }
-EXPORT u64 BngRwReadMifare() { return 0xFFFFFF9C; }
-EXPORT void BngRwFin() { return; }
-EXPORT u64 BngRwGetFwVersion() { return 0; }
-EXPORT u64 BngRwGetStationID() { return 0; }
-EXPORT u64 BngRwGetRetryCount() { return 0; }
-EXPORT i32 BngRwIsCmdExec() { return -1; }
-EXPORT u64 BngRwReqAction() { return 1; }
-EXPORT u64 BngRwReqAiccAuth() { return 1; }
-EXPORT u64 BngRwReqBeep() { return 1; }
-EXPORT u64 BngRwReqFwCleanup() { return 1; }
-EXPORT u64 BngRwReqFwVersionUp() { return 1; }
-EXPORT i32 BngRwReqLatchID() { return 1; }
-EXPORT u64 BngRwReqLed() { return 1; }
-EXPORT i32 BngRwReqSendMail() { return 1; }
-EXPORT i32 BngRwReqSendUrl() { return 1; }
-EXPORT i32 BngRwReqSendUrlTo() { return 1; }
-EXPORT u64 BngRwReqSetLedPower() { return 0; }
-EXPORT i32 BngRwReqCancel() { return 1; }
-EXPORT const char* BngRwGetVersion() { return "Ver 1.6.0"; }
-EXPORT u64 BngRwAttach(i32 a1, char* a2, i32 a3, i32 a4, void* callback, u64 a6) { return 1; }
-EXPORT i32 BngRwInit() { return 0; }
+EXPORT u64 BngRwDevReset() { API_TRACE("BngRwDevReset"); return 0; }
+EXPORT u64 BngRwReadMifare() { API_TRACE("BngRwReadMifare"); return 0xFFFFFF9C; }
+EXPORT void BngRwFin() { API_TRACE("BngRwFin"); return; }
+EXPORT u64 BngRwGetFwVersion() { API_TRACE("BngRwGetFwVersion"); return 0; }
+EXPORT u64 BngRwGetStationID() { API_TRACE("BngRwGetStationID"); return 0; }
+EXPORT u64 BngRwGetRetryCount() { API_TRACE("BngRwGetRetryCount"); return 0; }
+EXPORT i32 BngRwIsCmdExec() { API_TRACE("BngRwIsCmdExec"); return -1; }
+EXPORT u64 BngRwReqAction() { API_TRACE("BngRwReqAction"); return 1; }
+EXPORT u64 BngRwReqAiccAuth() { API_TRACE("BngRwReqAiccAuth"); return 1; }
+EXPORT u64 BngRwReqBeep() { API_TRACE("BngRwReqBeep"); return 1; }
+EXPORT u64 BngRwReqFwCleanup() { API_TRACE("BngRwReqFwCleanup"); return 1; }
+EXPORT u64 BngRwReqFwVersionUp() { API_TRACE("BngRwReqFwVersionUp"); return 1; }
+EXPORT u64 BngRwReqLed() { API_TRACE("BngRwReqLed"); return 1; }
+EXPORT i32 BngRwReqSendMail() { API_TRACE("BngRwReqSendMail"); return 1; }
+EXPORT i32 BngRwReqSendUrl() { API_TRACE("BngRwReqSendUrl"); return 1; }
+EXPORT u64 BngRwReqSetLedPower() { API_TRACE("BngRwReqSetLedPower"); return 0; }
+EXPORT const char* BngRwGetVersion() { API_TRACE("BngRwGetVersion"); return "Ver 1.6.0"; }
+EXPORT u64 BngRwAttach(i32 a1, char* a2, i32 a3, i32 a4, void* callback, u64 a6) { API_TRACE("BngRwAttach"); return 1; }
+EXPORT i32 BngRwInit() { API_TRACE("BngRwInit"); return 0; }
 
-// Aliases using the names found in other OpenBanapass builds / the original
-// Banapassport API, so games that resolve these by name still find them.
-// Arguments are ignored (Win64 calling convention: caller cleans up).
-EXPORT u64 BngRwExReadMifareAllBlock() { return 0xFFFFFF9C; }
-EXPORT u64 BngRwGetTotalRetryCount() { return 0; }
-EXPORT i32 BngRwReqSendMailTo() { return 1; }
-EXPORT u64 BngRwReqFwVersionup() { return 1; }
+// Names used by other OpenBanapass builds / the original Banapassport API, so
+// games that resolve these by name still find them.
+EXPORT u64 BngRwExReadMifareAllBlock() { API_TRACE("BngRwExReadMifareAllBlock"); return 0xFFFFFF9C; }
+EXPORT u64 BngRwGetTotalRetryCount() { API_TRACE("BngRwGetTotalRetryCount"); return 0; }
+EXPORT u64 BngRwReqFwVersionup() { API_TRACE("BngRwReqFwVersionup"); return 1; }
+
+EXPORT i32 BngRwReqCancel(u32 reader) {
+    API_TRACE("BngRwReqCancel");
+    if (strictApi && reader > BNGRW_MAX_READER) return BNGRW_ERR_ARG;
+    return 1;
+}
+
+EXPORT i32 BngRwReqLatchID(u32 reader, u64 b, u64 c) {
+    API_TRACE("BngRwReqLatchID");
+    if (strictApi && reader > BNGRW_MAX_READER) return BNGRW_ERR_ARG;
+    return 1;
+}
+
+EXPORT i32 BngRwReqSendMailTo(u32 reader, i32 b, u32 c, i32* d, char* to, char* f, char* g, char* h, u64 i, u64 j) {
+    API_TRACE("BngRwReqSendMailTo");
+    if (strictApi && (reader > BNGRW_MAX_READER || !to)) return BNGRW_ERR_ARG;
+    return 1;
+}
+
+EXPORT i32 BngRwReqSendUrlTo(u32 reader, i32 b, u32 c, i32* d, char* url, char* f, u64 g, u64 h) {
+    API_TRACE("BngRwReqSendUrlTo");
+    if (strictApi && (reader > BNGRW_MAX_READER || !url)) return BNGRW_ERR_ARG;
+    return 1;
+}
 
 EXPORT i32 BngRwReqWaitTouch(u32 a1, i32 a2, u32 a3, callbackTouch callback, u64 a5) {
+    API_TRACE("BngRwReqWaitTouch");
     if (touchFinished) {
         touchFinished = false;
         return 1;

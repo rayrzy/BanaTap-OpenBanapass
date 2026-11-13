@@ -32,6 +32,8 @@ AutoReadCooldownMs=0 ; minimum time after a tap before auto tap may fire again
 ToggleAutoKey=       ; key that switches auto tap on/off while playing, e.g. F9 (empty = off)
 LogToFile=1          ; 1 = write banatap.log next to the DLL (also sent to DebugView)
 LogExceptions=1      ; 1 = note serious exceptions (access violation, ...) in the log
+LogApiCalls=1        ; 1 = log the first call of each BngRw export the game makes
+StrictApi=0          ; 1 = reject invalid arguments (reader > 7, missing URL) with -100
 ```
 
 Notes:
@@ -62,6 +64,19 @@ Notes:
 - `LogExceptions` adds a line for access violations and similar first-chance exceptions with the
   module and offset. The game may handle some of them itself, so treat a line as a lead rather
   than proof of a crash. At most 20 lines per run.
+- `StrictApi` makes `BngRwReqCancel`, `BngRwReqLatchID`, `BngRwReqSendUrlTo` and
+  `BngRwReqSendMailTo` return `-100` for a reader number above 7 (and for a missing URL or
+  address), as the reference reader API does. It is off by default: the stubs accept everything,
+  which is what BanaTap always did and what the older revisions that hook these functions expect.
+- `LogApiCalls` writes one `api: <name> called by the game` line per export. It shows which
+  functions your game revision really uses, which helps when adding a new revision.
+- Exports: besides the original BanaTap names the DLL also exports `BngRwExReadMifareAllBlock`,
+  `BngRwGetTotalRetryCount`, `BngRwReqSendMailTo` and `BngRwReqFwVersionup`, the names used by
+  other builds. `BngRwExReadMifareAllBlock` / `BngRwReadMifare` return `0xFFFFFF9C` as a 64-bit
+  value on purpose, matching the reference implementation.
+- The DLL carries version information (right-click > Properties > Details) and prints it as the
+  first line of the log, for example `BanaTap 1.0.4-3a1b2c4`. The resource is added when `windres`
+  is found at build time; the git revision comes from `git describe`.
 - Changes to `BanaConfig.ini` are picked up within about a second, no restart needed.
   Removing a key restores its default.
 
