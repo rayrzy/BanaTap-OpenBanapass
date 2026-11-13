@@ -19,8 +19,10 @@ std::atomic<bool> pollRunning(false);
 u64 touchData;
 callbackTouch touchCallback;
 
-char accessCode[21] = "00000000000000000000";
-char chipId[33]     = "00000000000000000000000000000000";
+// Same as OpenBanapass: the values from card.ini are kept as written (up to
+// 63 characters, the size of the read buffer), not cut to 20 / 32 characters.
+char accessCode[64] = "00000000000000000000";
+char chipId[64]     = "00000000000000000000000000000000";
 u8 cardData[168];
 
 int cardInsertKey = 'C';
@@ -387,8 +389,8 @@ static void loadSettings() {
 // a value you put there is the identity the server sees, so it is not
 // "repaired" or replaced behind your back.
 // Returns false (and sends nothing) if either value is missing.
-// Values with an unexpected format are still used as written, truncated to
-// the field size, and a warning is logged.
+// Values with an unexpected format are still used exactly as written (no
+// truncation, like OpenBanapass) and a warning is logged.
 bool reloadCard() {
     static bool warnedFormat = false;
     static DWORD lastMissingWarn = 0;
@@ -415,8 +417,8 @@ bool reloadCard() {
 
     memset(accessCode, 0, sizeof(accessCode));
     memset(chipId, 0, sizeof(chipId));
-    strncpy(accessCode, ac, 20);
-    strncpy(chipId, ci, 32);
+    memcpy(accessCode, ac, strlen(ac) + 1);
+    memcpy(chipId, ci, strlen(ci) + 1);
     return true;
 }
 
@@ -657,8 +659,12 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
                 }
                 waitingForTouch = false;
             } else if (cb && reloadCard()) {
-                memcpy(cardData + 0x2C, chipId, 33);
-                memcpy(cardData + 0x50, accessCode, 21);
+                // Same as OpenBanapass: start from a fresh template, then copy
+                // accessCode (offset 0x50) first and chipId (offset 0x2C) second,
+                // each with its terminating NUL and no cut to 20 / 32 characters.
+                memcpy(cardData, cardDataTemplate, sizeof(cardData));
+                memcpy(cardData + 0x50, accessCode, strlen(accessCode) + 1);
+                memcpy(cardData + 0x2C, chipId, strlen(chipId) + 1);
                 cb(0, 0, cardData, data);
                 bnLog("card sent (%s)", keyDown ? "key" : (padDown ? "gamepad" : "auto"));
                 waitingForTouch = false;

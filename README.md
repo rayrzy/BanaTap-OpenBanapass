@@ -52,8 +52,10 @@ Notes:
 - `OnlyWhenFocused=1` checks that the foreground window belongs to the game process. It applies
   to the tap key, the gamepad and auto tap. If taps never work on your setup, set it to `0`.
 - `card.ini` is never modified after it has been created. If `chipId`/`accessCode` are missing
-  the card is not sent; if they look unusual they are sent exactly as written and a warning
-  goes to the debug log. A new random card is only generated when `card.ini` does not exist.
+  the card is not sent; if they look unusual they are sent exactly as written (not cut to 20 / 32
+  characters, like OpenBanapass: up to 63 characters each, with the terminating NUL) and a warning
+  goes to the debug log. Each card is built from a fresh template, `accessCode` copied to offset
+  0x50 first and `chipId` to offset 0x2C second. A new random card is only generated when `card.ini` does not exist.
 - `banatap.log` is created next to the DLL and restarted when it grows past 256 KB. It records
   the patch site check, hook results, card requests, which trigger sent the card, config
   reloads and warnings. `chipId` and `accessCode` are never written to it, so it is safe to

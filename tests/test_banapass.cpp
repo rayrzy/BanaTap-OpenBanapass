@@ -12,8 +12,8 @@
 extern PVECTORED_EXCEPTION_HANDLER g_veh; extern int g_vehAdds,g_vehRemoves;
 extern std::atomic<int> g_keys[256]; extern std::atomic<bool> g_focused; extern std::atomic<int> g_beeps; extern std::string g_log;
 
-static int taps=0; static char lastChip[40], lastAcc[24];
-static void cb(i32,i32,u8*d,u64){ taps++; memcpy(lastChip,d+0x2C,33); memcpy(lastAcc,d+0x50,21); }
+static int taps=0; static char lastChip[40], lastAcc[24]; static unsigned char lastCard[168];
+static void cb(i32,i32,u8*d,u64){ taps++; memcpy(lastCard,d,168); memcpy(lastChip,d+0x2C,33); memcpy(lastAcc,d+0x50,21); }
 static std::string slurp(const char*p){std::ifstream f(p);std::stringstream s;s<<f.rdbuf();return s.str();}
 static void put(const char*p,const char*c){std::ofstream f(p);f<<c;}
 static int fails=0;
@@ -81,6 +81,26 @@ int main(){
   put(".\\card.ini",good);
   // card is still waiting; tapping now works
   g_keys['C']=1; ms(500); g_keys['C']=0; CHECK(taps==4); finish();
+
+  // --- D2: values are copied as written, like OpenBanapass (no cut to 20 / 32)
+  {
+    int savedTaps=taps;
+    const char* longAcc="QWERTY0123456789ABCDEFGHJKLMNPRS";   // 32 characters in accessCode
+    const char* shortChip="1234567890123456789";                // 19 digits in chipId
+    std::string ini=std::string("[card]\naccessCode=")+longAcc+"\nchipId="+shortChip+"\n";
+    put(".\\card.ini",ini.c_str()); waitTouch(); g_keys['C']=1; ms(500); g_keys['C']=0;
+    CHECK(taps==savedTaps+1);
+    CHECK(memcmp(lastCard+0x50,longAcc,33)==0);              // whole value + NUL at 0x50
+    CHECK(memcmp(lastCard+0x2C,shortChip,20)==0);            // whole value + NUL at 0x2C
+    finish();
+    // a following, shorter card starts from a fresh template: nothing is left over
+    put(".\\card.ini",good); waitTouch(); g_keys['C']=1; ms(500); g_keys['C']=0;
+    CHECK(taps==savedTaps+2);
+    CHECK(memcmp(lastCard+0x50,"30764352518498791337",21)==0);
+    CHECK(lastCard[0x68]==0x00 && lastCard[0x69]==0x01);      // template bytes behind the field
+    finish();
+    taps=savedTaps;
+  }
 
   // --- E: autotap, live reload (config edited at runtime)
   ms(1100);

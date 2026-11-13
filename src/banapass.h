@@ -14,8 +14,8 @@ extern std::atomic<bool> pollRunning;
 extern u64 touchData;
 extern callbackTouch touchCallback;
 
-extern char accessCode[21];
-extern char chipId[33];
+extern char accessCode[64];
+extern char chipId[64];
 extern u8 cardData[168];
 
 extern int cardInsertKey;
