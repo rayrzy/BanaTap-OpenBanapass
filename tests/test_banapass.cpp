@@ -74,6 +74,8 @@ int main(){
   put(".\\card.ini",odd); waitTouch(); g_keys['C']=1; ms(500); g_keys['C']=0;
   CHECK(taps==3); CHECK(strcmp(lastChip,"ABC")==0); CHECK(strcmp(lastAcc,"123")==0);
   CHECK(slurp(".\\card.ini")==odd); finish();
+  { std::string L=slurp(".\\banatap.log");
+    CHECK(L.find("chipId has 3 chars (unusual, 32 hex expected), accessCode has 3 chars (unusual, 20 digits expected)")!=std::string::npos); }
 
   // --- D: missing values -> nothing sent
   put(".\\card.ini","[card]\nchipId=\n"); waitTouch(); g_keys['C']=1; ms(500); g_keys['C']=0;
@@ -106,7 +108,7 @@ int main(){
   ms(1100);
   put(".\\BanaConfig.ini","[BanaConfig]\nReadKey=C\nAutoRead=true\nAutoReadDelayMs=50\nBeepOnTap=1\n");
   ms(1300);
-  CHECK(g_log.find("config reloaded")!=std::string::npos);
+  CHECK(g_log.find("config reloaded (BanaConfig.ini changed)")!=std::string::npos);
   int before=taps; g_focused=false; waitTouch(); ms(500);
   CHECK(taps==before);              // not focused -> no autotap
   CHECK(g_beeps==0);
@@ -216,6 +218,13 @@ int main(){
     CHECK(taps==b6+2);
     CHECK(countIn("card sent (auto), #")>=2);
     CHECK(slurp(".\\banatap.log").find("BanaConfig.ini: ")!=std::string::npos); }
+
+  // --- M: the reload message names the file that changed
+  ms(1100);
+  put(".\\card.ini",good);
+  ms(1300);
+  CHECK(countIn("config reloaded (card.ini changed)")>=1);
+  CHECK(slurp(".\\banatap.log").find("7F5C9744F111111143262C3300040610")==std::string::npos);  // IDs still never logged
 
   shutdownBanapass(); th.join();
   printf("\n%s (%d failures)\n", fails?"FAILED":"ALL PASSED", fails);

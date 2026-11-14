@@ -405,7 +405,10 @@ bool reloadCard() {
     bool formatOk = validAccessCode(ac) && validChipId(ci);
     if (!formatOk && !warnedFormat) {
         warnedFormat = true;
-        bnLog("chipId (32 hex) / accessCode (20 digits) look unusual; sending them as written");
+        // Lengths and verdicts only: the values themselves are never logged
+        bnLog("card.ini values look unusual, sending them as written: chipId has %u chars (%s, 32 hex expected), accessCode has %u chars (%s, 20 digits expected)",
+              (unsigned)strlen(ci), validChipId(ci) ? "ok" : "unusual",
+              (unsigned)strlen(ac), validAccessCode(ac) ? "ok" : "unusual");
     }
     if (formatOk) warnedFormat = false;
 
@@ -598,11 +601,14 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
             FILETIME c, i;
             fileTime(configPath, &c);
             fileTime(iniPath, &i);
-            if (CompareFileTime(&c, &cfgTime) != 0 || CompareFileTime(&i, &iniTime) != 0) {
+            bool cfgChanged = CompareFileTime(&c, &cfgTime) != 0;
+            bool iniChanged = CompareFileTime(&i, &iniTime) != 0;
+            if (cfgChanged || iniChanged) {
                 loadSettings();
                 fileTime(configPath, &cfgTime);
                 fileTime(iniPath, &iniTime);
-                bnLog("config reloaded");
+                bnLog("config reloaded (%s%s%s changed)", cfgChanged ? "BanaConfig.ini" : "",
+                      (cfgChanged && iniChanged) ? " and " : "", iniChanged ? "card.ini" : "");
             }
         }
 

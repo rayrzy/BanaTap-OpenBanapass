@@ -65,6 +65,10 @@ Notes:
   after every config reload, for example `autoRead=on delay=1500ms`). `card sent (auto), #3` shows
   how many cards were sent in this run. The `BanaConfig.ini:` line near the top shows exactly which
   file the DLL reads, and whether it was found.
+- `config reloaded (BanaConfig.ini changed)` names the file that triggered a reload. If it appears
+  although you did not edit anything, another program touched that file.
+- `card.ini values look unusual` gives the length of `chipId` and `accessCode` (never the values)
+  and which of the two is unusual. The values are still sent exactly as written.
 - `LogExceptions` adds a line for access violations and similar first-chance exceptions with the
   module and offset. The game may handle some of them itself, so treat a line as a lead rather
   than proof of a crash. At most 20 lines per run.
