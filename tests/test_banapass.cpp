@@ -33,7 +33,7 @@ int main(){
   CHECK(slurp(".\\card.ini").find("chipId")!=std::string::npos);
   std::string cfg=slurp(".\\BanaConfig.ini");
   CHECK(cfg.find("OnlyWhenFocused=1")!=std::string::npos);
-  CHECK(cfg.find("AutoReadMode=always")!=std::string::npos);
+  CHECK(cfg.find("AutoReadMode")==std::string::npos);        // obsolete keys are not written
   CHECK(g_log.find("NEW random card identity")!=std::string::npos);
   CHECK(slurp(".\\banatap.log").find("WARNING: card.ini not found")!=std::string::npos);
   CHECK(cfg.find("LogToFile=1")!=std::string::npos);
@@ -104,42 +104,36 @@ int main(){
 
   // --- E: autotap, live reload (config edited at runtime)
   ms(1100);
-  put(".\\BanaConfig.ini","[BanaConfig]\nReadKey=C\nAutoRead=true\nAutoReadDelayMs=50\nAutoReadMode=once\nBeepOnTap=1\n");
+  put(".\\BanaConfig.ini","[BanaConfig]\nReadKey=C\nAutoRead=true\nAutoReadDelayMs=50\nBeepOnTap=1\n");
   ms(1300);
   CHECK(g_log.find("config reloaded")!=std::string::npos);
   int before=taps; g_focused=false; waitTouch(); ms(500);
   CHECK(taps==before);              // not focused -> no autotap
-  g_focused=true; ms(500);
-  CHECK(taps==before);              // sessionTapped already true (once) -> no autotap
   CHECK(g_beeps==0);
-  g_keys['C']=1; ms(500); g_keys['C']=0; CHECK(taps==before+1); CHECK(g_beeps==1); finish();
+  g_focused=true; ms(500);
+  CHECK(taps==before+1);            // focus is back -> the pending request is served
+  CHECK(g_beeps==1);                // BeepOnTap=1
+  finish();
 
-  // --- F: toggle key re-arms; autotap fires once then not again
+  // --- F: toggle key switches auto tap on and off
   ms(1100);
-  put(".\\BanaConfig.ini","[BanaConfig]\nReadKey=C\nAutoRead=0\nAutoReadDelayMs=50\nAutoReadMode=once\nToggleAutoKey=F9\n");
+  put(".\\BanaConfig.ini","[BanaConfig]\nReadKey=C\nAutoRead=0\nAutoReadDelayMs=50\nToggleAutoKey=F9\n");
   ms(1300);
   waitTouch(); ms(500); int b2=taps;
-  g_keys[0x78]=1; ms(80); g_keys[0x78]=0;  // F9 = 0x78 -> toggles on and re-arms
+  CHECK(taps==b2);                  // AutoRead=0: nothing happens by itself
+  g_keys[0x78]=1; ms(80); g_keys[0x78]=0;  // F9 = 0x78 -> auto tap on
   ms(500);
   CHECK(taps==b2+1);
   finish(); waitTouch(); ms(500);
-  CHECK(taps==b2+1);                // once mode: no second autotap
-  g_keys[0x78]=1; ms(80); g_keys[0x78]=0; ms(80); // off
-  g_keys[0x78]=1; ms(80); g_keys[0x78]=0; // on again -> re-armed
-  ms(500);
-  CHECK(taps==b2+2);
+  CHECK(taps==b2+2);                // auto tap answers every request
   finish();
-
-  // --- G: cooldown in always mode
-  ms(1100);
-  put(".\\BanaConfig.ini","[BanaConfig]\nReadKey=C\nAutoRead=1\nAutoReadDelayMs=50\nAutoReadMode=always\nAutoReadCooldownMs=1500\n");
-  ms(1300);
-  int b3=taps; waitTouch(); ms(500);   // earlier taps are old enough: autotap fires
-  int b4=taps; CHECK(b4==b3+1);
-  finish(); waitTouch(); ms(500);
-  CHECK(taps==b4);                     // inside cooldown -> no autotap
-  ms(1500);
-  CHECK(taps==b4+1);                   // cooldown over -> autotap
+  g_keys[0x78]=1; ms(80); g_keys[0x78]=0; ms(80); // off
+  waitTouch(); ms(500);
+  CHECK(taps==b2+2);                // off: no auto tap
+  g_keys[0x78]=1; ms(80); g_keys[0x78]=0;         // on again
+  ms(500);
+  CHECK(taps==b2+3);
+  finish();
 
   // --- H: stale callback pointer is not called
   ms(1100);
@@ -204,24 +198,23 @@ int main(){
   CHECK(slurp(".\\banatap.log").find("api: BngRwReqBeep called")==std::string::npos);
   CHECK(slurp(".\\banatap.log").find("BanaTap dev started")!=std::string::npos);
 
-  // --- L: the log makes once / always visible
+  // --- L: obsolete settings are ignored (and reported); auto tap answers every request
   auto countIn=[&](const char* what){ std::string L=slurp(".\\banatap.log"); size_t n=0,pos=0; while((pos=L.find(what,pos))!=std::string::npos){n++;pos++;} return n; };
   ms(1100);
-  put(".\\BanaConfig.ini","[BanaConfig]\nReadKey=C\nAutoRead=1\nAutoReadDelayMs=50\nAutoReadMode=once\n");
+  put(".\\BanaConfig.ini","[BanaConfig]\nReadKey=C\nAutoRead=1\nAutoReadDelayMs=50\nAutoReadMode=once\nAutoReadCooldownMs=60000\n");
   ms(1300);
-  CHECK(slurp(".\\banatap.log").find("autoRead=on mode=once")!=std::string::npos);
-  { size_t skips=countIn("auto tap skipped: AutoReadMode=once"); int b6=taps;
+  { std::string L=slurp(".\\banatap.log");
+    CHECK(L.find("ignoring obsolete setting AutoReadMode")!=std::string::npos);
+    CHECK(L.find("ignoring obsolete setting AutoReadCooldownMs")!=std::string::npos);
+    CHECK(L.find("autoRead=on delay=50ms")!=std::string::npos);
+    CHECK(L.find("mode=")==std::string::npos);                // the settings line no longer has a mode
+    CHECK(L.find("cooldown=")==std::string::npos); }
+  { int b6=taps;
     finish(); waitTouch(); ms(500);
-    CHECK(taps==b6);                                          // once: second request is not auto tapped
-    CHECK(countIn("auto tap skipped: AutoReadMode=once")==skips+1);   // ... and the log says why, once
-    ms(500);
-    CHECK(countIn("auto tap skipped: AutoReadMode=once")==skips+1);
-    ms(1100);
-    put(".\\BanaConfig.ini","[BanaConfig]\nReadKey=C\nAutoRead=1\nAutoReadDelayMs=50\nAutoReadMode=always\n");
-    ms(1300);
-    CHECK(slurp(".\\banatap.log").find("autoRead=on mode=always")!=std::string::npos);
-    CHECK(taps==b6+1);                                        // always: the pending request is served
-    CHECK(slurp(".\\banatap.log").find("card sent (auto), #")!=std::string::npos);
+    CHECK(taps==b6+1);                                        // second request is served, whatever the old keys say
+    finish(); waitTouch(); ms(500);
+    CHECK(taps==b6+2);
+    CHECK(countIn("card sent (auto), #")>=2);
     CHECK(slurp(".\\banatap.log").find("BanaConfig.ini: ")!=std::string::npos); }
 
   shutdownBanapass(); th.join();

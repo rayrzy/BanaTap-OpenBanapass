@@ -27,8 +27,6 @@ VerifyPatch=0        ; 1 = only NOP the patch site if it starts with a CALL (0xE
 PadButton=           ; XInput gamepad button(s) that tap the card, e.g. START or LB+A (empty = off)
 BeepOnTap=0          ; 1 = play a short beep when the card is sent
 OnlyWhenFocused=1    ; 1 = ignore all taps unless the game window is in the foreground
-AutoReadMode=always  ; always = auto tap on every card request, once = only the first one
-AutoReadCooldownMs=0 ; minimum time after a tap before auto tap may fire again
 ToggleAutoKey=       ; key that switches auto tap on/off while playing, e.g. F9 (empty = off)
 LogToFile=1          ; 1 = write banatap.log next to the DLL (also sent to DebugView)
 LogExceptions=1      ; 1 = note serious exceptions (access violation, ...) in the log
@@ -45,10 +43,10 @@ Notes:
 - Key names (`ReadKey`, `ToggleAutoKey`): a letter, `F1`-`F24`, `SPACE`, `ENTER`, `TAB`, `ESC`,
   `INSERT`, `DELETE`, `HOME`, `END`, `PAGEUP`, `PAGEDOWN`, the arrow keys, or a virtual-key code
   such as `67` / `0x43`.
-- Auto tap after a logout: with `AutoReadMode=always` the game asks for a card again right
-  after logging out, which would log you straight back in. Use `AutoReadMode=once`, or set
-  `AutoReadCooldownMs` (for example `60000`), or switch auto tap off with `ToggleAutoKey`.
-  Pressing `ToggleAutoKey` to turn auto tap back on re-arms it for the next card request.
+- Auto tap answers every card request after `AutoReadDelayMs`. To pause it while playing, use
+  `ToggleAutoKey`; the tap key still works while auto tap is off.
+- `AutoReadMode` and `AutoReadCooldownMs` from earlier builds no longer exist. They are ignored and
+  the log says so. In the games tested the card is requested once per launch, so they had no effect.
 - `OnlyWhenFocused=1` checks that the foreground window belongs to the game process. It applies
   to the tap key, the gamepad and auto tap. If taps never work on your setup, set it to `0`.
 - `card.ini` is never modified after it has been created. If `chipId`/`accessCode` are missing
@@ -63,11 +61,10 @@ Notes:
 - If the game never gets a card, look in the log for `not in the foreground` (see
   `OnlyWhenFocused`), `card not sent` (missing values in `card.ini`) or `patch site ... UNEXPECTED`
   (the patch offset does not match your game revision).
-- To check that `AutoReadMode` was understood, look for the `settings:` line (written at start and
-  after every config reload, for example `autoRead=on mode=once`) and for `auto tap skipped:`, which
-  names the reason (once or cooldown) the first time a card request is not served automatically.
-  `card sent (auto), #3` shows how many cards were sent in this run. The `BanaConfig.ini:` line near
-  the top shows exactly which file the DLL reads, and whether it was found.
+- To check that the settings were understood, look for the `settings:` line (written at start and
+  after every config reload, for example `autoRead=on delay=1500ms`). `card sent (auto), #3` shows
+  how many cards were sent in this run. The `BanaConfig.ini:` line near the top shows exactly which
+  file the DLL reads, and whether it was found.
 - `LogExceptions` adds a line for access violations and similar first-chance exceptions with the
   module and offset. The game may handle some of them itself, so treat a line as a lead rather
   than proof of a crash. At most 20 lines per run.

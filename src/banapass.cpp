@@ -97,14 +97,7 @@ static bool verifyPatch    = false; // [settings] verifyPatch=1
 static bool beepOnTap      = false; // [BanaConfig] BeepOnTap=1
 static WORD padMask        = 0;     // [BanaConfig] PadButton=START / LB+A ...
 static bool onlyFocused    = true;  // [BanaConfig] OnlyWhenFocused=1
-static bool autoOnce       = false; // [BanaConfig] AutoReadMode=once
-static DWORD autoCooldown  = 0;     // [BanaConfig] AutoReadCooldownMs
 static int toggleKey       = 0;     // [BanaConfig] ToggleAutoKey
-
-// Runtime state (not reloaded from config)
-static bool sessionTapped  = false; // a card has been sent since start / re-arm
-static bool hasTapped      = false;
-static DWORD lastTapTick   = 0;
 
 static void resolveIniPath() {
     HMODULE self = NULL;
@@ -189,8 +182,6 @@ static void createConfig() {
     WritePrivateProfileStringA("BanaConfig", "PadButton", "", configPath);
     WritePrivateProfileStringA("BanaConfig", "BeepOnTap", "0", configPath);
     WritePrivateProfileStringA("BanaConfig", "OnlyWhenFocused", "1", configPath);
-    WritePrivateProfileStringA("BanaConfig", "AutoReadMode", "always", configPath);
-    WritePrivateProfileStringA("BanaConfig", "AutoReadCooldownMs", "0", configPath);
     WritePrivateProfileStringA("BanaConfig", "ToggleAutoKey", "", configPath);
     WritePrivateProfileStringA("BanaConfig", "LogToFile", "1", configPath);
     WritePrivateProfileStringA("BanaConfig", "LogExceptions", "1", configPath);
@@ -344,8 +335,6 @@ static void loadSettings() {
     beepOnTap     = false;
     padMask       = 0;
     onlyFocused   = true;
-    autoOnce      = false;
-    autoCooldown  = 0;
     toggleKey     = 0;
     logToFile     = true;
     logExceptions = true;
@@ -363,13 +352,14 @@ static void loadSettings() {
     bool b;
     if (readCfg("BanaConfig", "BeepOnTap", configPath, val, sizeof(val)) && parseBool(val, &b)) beepOnTap = b;
     if (readCfg("BanaConfig", "OnlyWhenFocused", configPath, val, sizeof(val)) && parseBool(val, &b)) onlyFocused = b;
-    if (readCfg("BanaConfig", "AutoReadMode", configPath, val, sizeof(val))) {
-        if (equalsNoCase(val, "once")) autoOnce = true;
-        else if (equalsNoCase(val, "always")) autoOnce = false;
-        else bnLog("AutoReadMode must be 'always' or 'once', keeping 'always'");
+
+    // Settings from earlier builds that no longer exist
+    static const char* const obsolete[] = {"AutoReadMode", "AutoReadCooldownMs"};
+    for (size_t i = 0; i < sizeof(obsolete) / sizeof(obsolete[0]); i++) {
+        if (readCfg("BanaConfig", obsolete[i], configPath, val, sizeof(val)))
+            bnLog("ignoring obsolete setting %s: auto tap answers every card request", obsolete[i]);
     }
-    long cd;
-    if (readCfg("BanaConfig", "AutoReadCooldownMs", configPath, val, sizeof(val)) && parseInt(val, &cd) && cd >= 0) autoCooldown = (DWORD)cd;
+
     if (readCfg("BanaConfig", "ToggleAutoKey", configPath, val, sizeof(val))) toggleKey = parseKey(val);
     if (readCfg("BanaConfig", "LogToFile", configPath, val, sizeof(val)) && parseBool(val, &b)) logToFile = b;
     if (readCfg("BanaConfig", "LogExceptions", configPath, val, sizeof(val)) && parseBool(val, &b)) logExceptions = b;
@@ -384,10 +374,9 @@ static void loadSettings() {
         }
     }
 
-    bnLog("settings: tapKey=%d autoRead=%s mode=%s delay=%lums cooldown=%lums focusOnly=%s padMask=0x%04X toggleKey=%d",
-          cardInsertKey, autoTap ? "on" : "off", autoOnce ? "once" : "always",
-          (unsigned long)autoTapDelay, (unsigned long)autoCooldown, onlyFocused ? "yes" : "no",
-          (unsigned)padMask, toggleKey);
+    bnLog("settings: tapKey=%d autoRead=%s delay=%lums focusOnly=%s padMask=0x%04X toggleKey=%d",
+          cardInsertKey, autoTap ? "on" : "off", (unsigned long)autoTapDelay,
+          onlyFocused ? "yes" : "no", (unsigned)padMask, toggleKey);
 }
 
 // Reads chipId/accessCode from card.ini. The file is never modified here:
@@ -594,7 +583,6 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
     bool toggleWasDown = false;
     DWORD lastFocusHint = 0;
     DWORD lastBadCb = 0;
-    bool skipLogged = false;
     unsigned sentCount = 0;
 
     FILETIME cfgTime, iniTime;
@@ -621,22 +609,16 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
         bool waiting = waitingForTouch;
         if (waiting && !wasWaiting) {
             waitSince = GetTickCount();
-            skipLogged = false;
             bnLog("game is waiting for a card");
         }
         wasWaiting = waiting;
 
         bool focused = !onlyFocused || gameFocused();
 
-        // Runtime on/off switch for auto tap. Turning it on also re-arms it
-        // (clears the "already tapped" state and the cooldown).
+        // Runtime on/off switch for auto tap
         bool toggleDown = toggleKey && focused && (GetAsyncKeyState(toggleKey) & 0x8000) != 0;
         if (toggleDown && !toggleWasDown) {
             autoTap = !autoTap;
-            if (autoTap) {
-                sessionTapped = false;
-                hasTapped     = false;
-            }
             bnLog(autoTap ? "auto tap ON" : "auto tap OFF");
             if (beepOnTap) MessageBeep(autoTap ? MB_ICONASTERISK : MB_ICONEXCLAMATION);
         }
@@ -653,18 +635,8 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
         }
         bool padDown = waiting && focused && padPressed();
 
-        DWORD sinceTap     = hasTapped ? GetTickCount() - lastTapTick : 0;
-        bool autoReady     = autoTap && focused && waiting && (GetTickCount() - waitSince >= autoTapDelay);
-        bool blockedByOnce = autoOnce && sessionTapped;
-        bool blockedByCool = hasTapped && sinceTap < autoCooldown;
-        bool autoDue       = autoReady && !blockedByOnce && !blockedByCool;
-        if (autoReady && !autoDue && !skipLogged) {
-            skipLogged = true;
-            if (blockedByOnce)
-                bnLog("auto tap skipped: AutoReadMode=once and a card was already sent (tap manually, or press the toggle key twice to re-arm)");
-            else
-                bnLog("auto tap skipped: cooldown, %lu ms left", (unsigned long)(autoCooldown - sinceTap));
-        }
+        bool autoDue = autoTap && focused && waiting &&
+                       (GetTickCount() - waitSince >= autoTapDelay);
 
         if (waiting && (keyDown || padDown || autoDue)) {
             callbackTouch cb = touchCallback;
@@ -687,9 +659,6 @@ DWORD WINAPI cardPollThread(LPVOID lpParam) {
                 bnLog("card sent (%s), #%u", keyDown ? "key" : (padDown ? "gamepad" : "auto"), ++sentCount);
                 waitingForTouch = false;
                 touchFinished   = true;
-                sessionTapped   = true;
-                hasTapped       = true;
-                lastTapTick     = GetTickCount();
                 if (beepOnTap) MessageBeep(MB_OK);
             }
         }
